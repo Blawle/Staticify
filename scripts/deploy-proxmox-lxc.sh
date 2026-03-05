@@ -13,7 +13,7 @@
 #   --hostname <name>    Hostname (default: staticify)
 #   --memory <mb>        Memory in MB (default: 2048)
 #   --cores <n>          CPU cores (default: 2)
-#   --storage <name>     Storage pool (default: local-lvm)
+#   --storage <name>     Storage pool (default: interactive selection)
 #   --disk <gb>          Disk size in GB (default: 20)
 #   --bridge <name>      Network bridge (default: vmbr0)
 #   --ip <address>       Static IP with CIDR (default: dhcp)
@@ -21,11 +21,13 @@
 #   --template <path>    Template path (default: auto-download Ubuntu 22.04)
 #   --domain <domain>    Domain name for SSL (optional)
 #   --encryption-key <k> Custom encryption key (default: auto-generate)
+#   --non-interactive    Skip interactive prompts (use defaults)
 #   --help               Show this help message
 #
 # Example:
 #   ./deploy-proxmox-lxc.sh --hostname staticify --memory 4096 --cores 4
 #   ./deploy-proxmox-lxc.sh --ip 192.168.1.100/24 --gateway 192.168.1.1
+#   ./deploy-proxmox-lxc.sh --storage local-lvm --non-interactive
 #
 
 set -e
@@ -48,13 +50,15 @@ HOSTNAME="staticify"
 MEMORY=2048
 SWAP=512
 CORES=2
-STORAGE="local-lvm"
+STORAGE=""
+STORAGE_SELECTED=false
 DISK_SIZE=20
 BRIDGE="vmbr0"
 IP_CONFIG="ip=dhcp"
 TEMPLATE=""
 DOMAIN=""
 ENCRYPTION_KEY=""
+INTERACTIVE=true
 
 # Logging functions
 log_info() { echo -e "${BLUE}[INFO]${NC} $1"; }
@@ -92,7 +96,7 @@ parse_args() {
             --hostname) HOSTNAME="$2"; shift 2 ;;
             --memory) MEMORY="$2"; shift 2 ;;
             --cores) CORES="$2"; shift 2 ;;
-            --storage) STORAGE="$2"; shift 2 ;;
+            --storage) STORAGE="$2"; STORAGE_SELECTED=true; shift 2 ;;
             --disk) DISK_SIZE="$2"; shift 2 ;;
             --bridge) BRIDGE="$2"; shift 2 ;;
             --ip) IP_CONFIG="ip=$2"; shift 2 ;;
@@ -100,7 +104,8 @@ parse_args() {
             --template) TEMPLATE="$2"; shift 2 ;;
             --domain) DOMAIN="$2"; shift 2 ;;
             --encryption-key) ENCRYPTION_KEY="$2"; shift 2 ;;
-            --help) head -35 "$0" | tail -30; exit 0 ;;
+            --non-interactive) INTERACTIVE=false; shift ;;
+            --help) head -40 "$0" | tail -35; exit 0 ;;
             *) log_error "Unknown option: $1. Use --help for usage." ;;
         esac
     done
@@ -116,6 +121,133 @@ check_proxmox() {
         log_error "Proxmox API tools not found"
     fi
     log_success "Running on Proxmox VE"
+}
+
+# Detect and select storage
+select_storage() {
+    log_step "Detecting available storage locations..."
+    
+    # If storage was provided via command line, validate and use it
+    if [ "$STORAGE_SELECTED" = true ] && [ -n "$STORAGE" ]; then
+        if pvesm status 2>/dev/null | grep -q "^${STORAGE}"; then
+            log_success "Using specified storage: $STORAGE"
+            return
+        else
+            log_warning "Specified storage '$STORAGE' not found. Please select from available options."
+            STORAGE_SELECTED=false
+        fi
+    fi
+    
+    # Get list of available storage pools that support containers (rootdir)
+    echo ""
+    echo -e "${CYAN}Available Storage Locations:${NC}"
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    
+    # Parse storage info
+    declare -a STORAGE_LIST
+    declare -a STORAGE_INFO
+    local i=0
+    
+    while IFS= read -r line; do
+        # Skip header line
+        [[ "$line" =~ ^Name ]] && continue
+        [[ -z "$line" ]] && continue
+        
+        # Parse storage details
+        local name=$(echo "$line" | awk '{print $1}')
+        local type=$(echo "$line" | awk '{print $2}')
+        local status=$(echo "$line" | awk '{print $3}')
+        local total=$(echo "$line" | awk '{print $4}')
+        local used=$(echo "$line" | awk '{print $5}')
+        local avail=$(echo "$line" | awk '{print $6}')
+        local usage=$(echo "$line" | awk '{print $7}')
+        
+        # Skip if not active
+        [[ "$status" != "active" ]] && continue
+        
+        # Check if storage supports rootdir content (for containers)
+        local content=$(pvesm status -storage "$name" 2>/dev/null | grep -oP 'content=\K[^ ]+' || echo "")
+        
+        # Get storage content types from config
+        local supports_rootdir=false
+        if pvesh get /storage/"$name" 2>/dev/null | grep -q "rootdir\|images"; then
+            supports_rootdir=true
+        fi
+        
+        # Also check via pvesm
+        if pvesm status 2>/dev/null | grep "^$name" | grep -qE "rootdir|images|dir|lvm|lvmthin|zfspool|rbd|ceph"; then
+            supports_rootdir=true
+        fi
+        
+        # For common storage types that support containers
+        case "$type" in
+            lvmthin|lvm|dir|zfspool|rbd|cephfs|nfs|cifs|glusterfs)
+                supports_rootdir=true
+                ;;
+        esac
+        
+        if [ "$supports_rootdir" = true ]; then
+            i=$((i + 1))
+            STORAGE_LIST+=("$name")
+            
+            # Format output
+            local status_icon="${GREEN}●${NC}"
+            printf "  ${YELLOW}%2d${NC}) %-15s ${BLUE}%-10s${NC} %s  " "$i" "$name" "$type" "$status_icon"
+            
+            # Show space info if available
+            if [[ "$avail" != "-" && -n "$avail" ]]; then
+                printf "${GREEN}%s free${NC}" "$avail"
+            fi
+            echo ""
+            
+            # Store detailed info
+            STORAGE_INFO+=("$name|$type|$avail")
+        fi
+    done < <(pvesm status 2>/dev/null)
+    
+    echo -e "${CYAN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo ""
+    
+    # Check if any storage found
+    if [ ${#STORAGE_LIST[@]} -eq 0 ]; then
+        log_error "No suitable storage locations found for LXC containers"
+    fi
+    
+    # If only one storage available, use it automatically
+    if [ ${#STORAGE_LIST[@]} -eq 1 ]; then
+        STORAGE="${STORAGE_LIST[0]}"
+        log_info "Only one storage available, using: $STORAGE"
+        return
+    fi
+    
+    # Interactive selection
+    if [ "$INTERACTIVE" = true ]; then
+        while true; do
+            echo -ne "${YELLOW}Select storage location [1-${#STORAGE_LIST[@]}]${NC} (or press Enter for "
+            echo -ne "${GREEN}${STORAGE_LIST[0]}${NC}): "
+            read -r selection
+            
+            # Default to first option
+            if [ -z "$selection" ]; then
+                selection=1
+            fi
+            
+            # Validate selection
+            if [[ "$selection" =~ ^[0-9]+$ ]] && [ "$selection" -ge 1 ] && [ "$selection" -le ${#STORAGE_LIST[@]} ]; then
+                STORAGE="${STORAGE_LIST[$((selection - 1))]}"
+                break
+            else
+                echo -e "${RED}Invalid selection. Please enter a number between 1 and ${#STORAGE_LIST[@]}${NC}"
+            fi
+        done
+    else
+        # Non-interactive mode: use first available storage
+        STORAGE="${STORAGE_LIST[0]}"
+        log_info "Non-interactive mode: using first available storage"
+    fi
+    
+    log_success "Selected storage: $STORAGE"
+    echo ""
 }
 
 # Get next available container ID
@@ -433,6 +565,8 @@ show_completion() {
     echo -e "  Container ID:   ${GREEN}$CTID${NC}"
     echo -e "  Hostname:       ${GREEN}$HOSTNAME${NC}"
     echo -e "  IP Address:     ${GREEN}${CONTAINER_IP:-DHCP}${NC}"
+    echo -e "  Storage:        ${GREEN}$STORAGE${NC}"
+    echo -e "  Disk Size:      ${GREEN}${DISK_SIZE}GB${NC}"
     echo -e "  Memory:         ${GREEN}${MEMORY}MB${NC}"
     echo -e "  CPU Cores:      ${GREEN}$CORES${NC}"
     echo ""
@@ -458,6 +592,7 @@ main() {
     parse_args "$@"
     
     check_proxmox
+    select_storage
     get_next_ctid
     download_template
     generate_encryption_key

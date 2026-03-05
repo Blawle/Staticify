@@ -72,13 +72,31 @@ chmod +x deploy-proxmox-lxc.sh
 | `--hostname <name>` | Container hostname | `staticify` |
 | `--memory <mb>` | RAM in MB | `2048` |
 | `--cores <n>` | CPU cores | `2` |
-| `--storage <name>` | Storage pool | `local-lvm` |
+| `--storage <name>` | Storage pool | Interactive selection |
 | `--disk <gb>` | Disk size in GB | `20` |
 | `--bridge <name>` | Network bridge | `vmbr0` |
 | `--ip <address>` | Static IP (CIDR) | `dhcp` |
 | `--gateway <address>` | Gateway IP | (required if static) |
 | `--domain <domain>` | Domain for SSL | (optional) |
 | `--encryption-key <key>` | Custom encryption key | Auto-generate |
+| `--non-interactive` | Skip prompts, use defaults | (flag) |
+
+### Storage Selection
+
+The script automatically detects all available storage locations on your Proxmox host and presents them for selection:
+
+```
+Available Storage Locations:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+   1) local-lvm       lvmthin    ● 50GB free
+   2) ceph-pool       rbd        ● 500GB free  
+   3) nfs-storage     nfs        ● 1TB free
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Select storage location [1-3] (or press Enter for local-lvm): 
+```
+
+To skip the interactive prompt, use `--storage <name>` or `--non-interactive`:
 
 ---
 
