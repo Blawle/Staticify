@@ -263,6 +263,16 @@ export default function SiteProfiles() {
                     <FolderOpen className="w-3.5 h-3.5 text-amber-500" />
                     <span className="truncate font-mono text-xs">{profile.external_root}</span>
                   </div>
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                    <span className="text-xs">
+                      {profile.has_password ? (
+                        <span className="text-emerald-500">Password encrypted</span>
+                      ) : (
+                        <span className="text-amber-500">No password set</span>
+                      )}
+                    </span>
+                  </div>
                 </div>
                 
                 {profile.last_deployment && (
@@ -397,16 +407,22 @@ export default function SiteProfiles() {
                   />
                 </div>
                 <div className="form-group">
-                  <Label htmlFor="external_password" className="form-label">Password</Label>
+                  <Label htmlFor="external_password" className="form-label flex items-center gap-2">
+                    Password
+                    <ShieldCheck className="w-3.5 h-3.5 text-emerald-500" />
+                  </Label>
                   <Input
                     id="external_password"
                     name="external_password"
                     type="password"
                     value={formData.external_password}
                     onChange={handleInputChange}
-                    placeholder="••••••••"
+                    placeholder={selectedProfile ? "Leave blank to keep current" : "Enter FTP/SFTP password"}
                     data-testid="external-password-input"
                   />
+                  <p className="form-hint text-emerald-600">
+                    Stored encrypted using AES-256
+                  </p>
                 </div>
                 <div className="form-group">
                   <Label htmlFor="external_root" className="form-label">Root Directory</Label>

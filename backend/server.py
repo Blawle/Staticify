@@ -14,6 +14,10 @@ import asyncio
 from urllib.parse import urljoin, urlparse
 import aiofiles
 import json
+import base64
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -37,6 +41,49 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# ============ ENCRYPTION UTILITIES ============
+
+# Get or generate encryption key from environment
+ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', 'wp-static-deployer-secret-key-2026')
+
+def get_fernet():
+    """Generate a Fernet instance using a derived key from the secret"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b'wp-static-salt-v1',  # Static salt for consistency
+        iterations=100000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(ENCRYPTION_KEY.encode()))
+    return Fernet(key)
+
+def encrypt_password(password: str) -> str:
+    """Encrypt a password for secure storage"""
+    if not password:
+        return ""
+    fernet = get_fernet()
+    encrypted = fernet.encrypt(password.encode())
+    return base64.urlsafe_b64encode(encrypted).decode()
+
+def decrypt_password(encrypted_password: str) -> str:
+    """Decrypt a stored password"""
+    if not encrypted_password:
+        return ""
+    try:
+        fernet = get_fernet()
+        decoded = base64.urlsafe_b64decode(encrypted_password.encode())
+        decrypted = fernet.decrypt(decoded)
+        return decrypted.decode()
+    except Exception as e:
+        logger.error(f"Failed to decrypt password: {e}")
+        return ""
+
+def mask_password(password: str) -> str:
+    """Return a masked version of the password for display"""
+    if not password:
+        return ""
+    return "••••••••"
 
 # ============ MODELS ============
 
@@ -62,6 +109,11 @@ class SiteProfile(SiteProfileBase):
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     last_deployment: Optional[str] = None
     last_crawl: Optional[str] = None
+    has_password: Optional[bool] = False
+
+class SiteProfileResponse(SiteProfile):
+    """Response model that includes password status indicator"""
+    has_password: bool = False
 
 class DeploymentHistoryBase(BaseModel):
     profile_id: str
@@ -125,6 +177,11 @@ class FileCompareResult(BaseModel):
 @api_router.get("/profiles", response_model=List[SiteProfile])
 async def get_profiles():
     profiles = await db.site_profiles.find({}, {"_id": 0}).to_list(100)
+    # Mask passwords in response (never send actual passwords to frontend)
+    for profile in profiles:
+        profile["external_password"] = mask_password(profile.get("external_password", ""))
+        # Add flag to indicate password is set
+        profile["has_password"] = bool(profile.get("encrypted_password"))
     return profiles
 
 @api_router.get("/profiles/{profile_id}", response_model=SiteProfile)
@@ -132,13 +189,27 @@ async def get_profile(profile_id: str):
     profile = await db.site_profiles.find_one({"id": profile_id}, {"_id": 0})
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    # Mask password in response
+    profile["external_password"] = mask_password(profile.get("external_password", ""))
+    profile["has_password"] = bool(profile.get("encrypted_password"))
     return profile
 
 @api_router.post("/profiles", response_model=SiteProfile)
 async def create_profile(profile_data: SiteProfileCreate):
     profile = SiteProfile(**profile_data.model_dump())
-    await db.site_profiles.insert_one(profile.model_dump())
-    return profile
+    profile_dict = profile.model_dump()
+    
+    # Encrypt the password before storing
+    if profile_dict.get("external_password"):
+        profile_dict["encrypted_password"] = encrypt_password(profile_dict["external_password"])
+        profile_dict["external_password"] = ""  # Don't store plain text
+    
+    await db.site_profiles.insert_one(profile_dict)
+    
+    # Return masked password in response
+    profile_dict["external_password"] = mask_password(profile_data.external_password)
+    profile_dict["has_password"] = bool(profile_data.external_password)
+    return profile_dict
 
 @api_router.put("/profiles/{profile_id}", response_model=SiteProfile)
 async def update_profile(profile_id: str, profile_data: SiteProfileCreate):
@@ -153,7 +224,21 @@ async def update_profile(profile_id: str, profile_data: SiteProfileCreate):
     updated_data["last_deployment"] = existing.get("last_deployment")
     updated_data["last_crawl"] = existing.get("last_crawl")
     
+    # Handle password update
+    if updated_data.get("external_password") and updated_data["external_password"] != "••••••••":
+        # New password provided - encrypt it
+        updated_data["encrypted_password"] = encrypt_password(updated_data["external_password"])
+        updated_data["external_password"] = ""
+    else:
+        # Keep existing encrypted password
+        updated_data["encrypted_password"] = existing.get("encrypted_password", "")
+        updated_data["external_password"] = ""
+    
     await db.site_profiles.update_one({"id": profile_id}, {"$set": updated_data})
+    
+    # Return masked password
+    updated_data["external_password"] = mask_password("password")
+    updated_data["has_password"] = bool(updated_data.get("encrypted_password"))
     return updated_data
 
 @api_router.delete("/profiles/{profile_id}")
@@ -329,11 +414,16 @@ async def deploy_via_ftp(deployment_id: str, profile: dict, job_id: str):
     try:
         logs.append(f"[INFO] Connecting to {profile['external_host']}:{profile['external_port']} via FTP...")
         
+        # Decrypt password for connection
+        password = decrypt_password(profile.get("encrypted_password", ""))
+        if not password and profile.get("external_password"):
+            password = profile["external_password"]  # Fallback for legacy data
+        
         ftp = ftplib.FTP()
         ftp.connect(profile["external_host"], profile["external_port"], timeout=30)
-        ftp.login(profile["external_username"], profile["external_password"])
+        ftp.login(profile["external_username"], password)
         
-        logs.append("[SUCCESS] Connected successfully")
+        logs.append("[SUCCESS] Connected successfully (credentials secured)")
         
         # Navigate to root directory
         try:
@@ -433,11 +523,16 @@ async def deploy_via_sftp(deployment_id: str, profile: dict, job_id: str):
     try:
         logs.append(f"[INFO] Connecting to {profile['external_host']}:{profile['external_port']} via SFTP...")
         
+        # Decrypt password for connection
+        password = decrypt_password(profile.get("encrypted_password", ""))
+        if not password and profile.get("external_password"):
+            password = profile["external_password"]  # Fallback for legacy data
+        
         transport = paramiko.Transport((profile["external_host"], profile["external_port"]))
-        transport.connect(username=profile["external_username"], password=profile["external_password"])
+        transport.connect(username=profile["external_username"], password=password)
         sftp = paramiko.SFTPClient.from_transport(transport)
         
-        logs.append("[SUCCESS] Connected successfully")
+        logs.append("[SUCCESS] Connected successfully (credentials secured)")
         
         # Get crawled files
         crawl_dir = Path(f"/tmp/crawl_{job_id}")

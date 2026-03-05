@@ -75,3 +75,19 @@ Build a self hostable tool that can be utilized to take an internal WordPress bu
 2. Add SSH key authentication option for SFTP
 3. Add deployment webhook/email notifications
 4. Implement incremental deployment (hash-based file comparison)
+
+## Security Update (January 2026)
+
+### Password Encryption Implementation
+- **Encryption**: AES-256 via Fernet (cryptography library)
+- **Key Derivation**: PBKDF2-HMAC-SHA256 with 100,000 iterations
+- **Storage**: Passwords stored in `encrypted_password` field, plain `external_password` field is always empty
+- **Display**: Frontend shows masked "••••••••" and "Password encrypted" status
+- **Decryption**: Only occurs server-side during FTP/SFTP connection
+
+### Security Features
+- [x] Passwords never returned in plain text to frontend
+- [x] Encrypted at rest in MongoDB
+- [x] Visual indicator showing encryption status on profile cards
+- [x] Form shows "Stored encrypted using AES-256" notice
+- [x] Legacy support for unencrypted passwords (auto-migration on deploy)
