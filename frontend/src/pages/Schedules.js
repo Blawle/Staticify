@@ -1,16 +1,13 @@
 import { useState, useEffect } from "react";
 import axios from "axios";
 import { toast } from "sonner";
-import { format } from "date-fns";
 import {
   Clock,
   Plus,
   Trash2,
   RefreshCw,
-  Play,
-  Pause,
   Calendar,
-  Globe
+  Link2
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -50,6 +47,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Link } from "react-router-dom";
 
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
@@ -65,12 +63,12 @@ const cronPresets = [
 
 export default function Schedules() {
   const [schedules, setSchedules] = useState([]);
-  const [profiles, setProfiles] = useState([]);
+  const [deployments, setDeployments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
-  const [selectedProfileId, setSelectedProfileId] = useState("");
+  const [selectedConfigId, setSelectedConfigId] = useState("");
   const [cronExpression, setCronExpression] = useState("0 0 * * *");
   const [saving, setSaving] = useState(false);
 
@@ -81,12 +79,12 @@ export default function Schedules() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [schedulesRes, profilesRes] = await Promise.all([
+      const [schedulesRes, deploymentsRes] = await Promise.all([
         axios.get(`${API}/schedules`),
-        axios.get(`${API}/profiles`)
+        axios.get(`${API}/deployment-configs`)
       ]);
       setSchedules(schedulesRes.data);
-      setProfiles(profilesRes.data);
+      setDeployments(deploymentsRes.data);
     } catch (error) {
       toast.error("Failed to fetch data");
     } finally {
@@ -95,7 +93,7 @@ export default function Schedules() {
   };
 
   const handleCreate = async () => {
-    if (!selectedProfileId || !cronExpression) {
+    if (!selectedConfigId || !cronExpression) {
       toast.error("Please fill in all fields");
       return;
     }
@@ -103,13 +101,13 @@ export default function Schedules() {
     try {
       setSaving(true);
       await axios.post(`${API}/schedules`, {
-        profile_id: selectedProfileId,
+        deployment_config_id: selectedConfigId,
         cron_expression: cronExpression,
         enabled: true
       });
-      toast.success("Schedule created successfully");
+      toast.success("Schedule created");
       setIsDialogOpen(false);
-      setSelectedProfileId("");
+      setSelectedConfigId("");
       setCronExpression("0 0 * * *");
       fetchData();
     } catch (error) {
@@ -131,7 +129,6 @@ export default function Schedules() {
 
   const handleDelete = async () => {
     if (!selectedSchedule) return;
-
     try {
       await axios.delete(`${API}/schedules/${selectedSchedule.id}`);
       toast.success("Schedule deleted");
@@ -143,29 +140,35 @@ export default function Schedules() {
     }
   };
 
-  const openDeleteDialog = (schedule) => {
-    setSelectedSchedule(schedule);
-    setIsDeleteDialogOpen(true);
-  };
+  const canCreateSchedule = deployments.length > 0;
 
   return (
     <div className="page-container">
       <div className="page-header flex items-center justify-between">
         <div>
           <h1 className="page-title" data-testid="schedules-title">Scheduled Deployments</h1>
-          <p className="page-description">Automate your WordPress to static deployments</p>
+          <p className="page-description">Automate your deployments with cron schedules</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={fetchData} data-testid="refresh-schedules-btn">
-            <RefreshCw className="w-4 h-4 mr-2" />
-            Refresh
+            <RefreshCw className="w-4 h-4 mr-2" />Refresh
           </Button>
-          <Button className="btn-primary-glow" onClick={() => setIsDialogOpen(true)} data-testid="add-schedule-btn">
-            <Plus className="w-4 h-4 mr-2" />
-            Add Schedule
+          <Button className="btn-primary-glow" onClick={() => setIsDialogOpen(true)} disabled={!canCreateSchedule} data-testid="add-schedule-btn">
+            <Plus className="w-4 h-4 mr-2" />Add Schedule
           </Button>
         </div>
       </div>
+
+      {!canCreateSchedule && (
+        <Card className="bg-amber-500/5 border-amber-500/20 mb-6">
+          <CardContent className="pt-4">
+            <p className="text-sm text-amber-400">You need at least one deployment configuration to create a schedule.</p>
+            <Link to="/deployments" className="mt-2 inline-block">
+              <Button variant="outline" size="sm"><Link2 className="w-4 h-4 mr-2" />Create Deployment</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      )}
 
       <Card className="bg-card border-border">
         <CardContent className="p-0">
@@ -175,27 +178,21 @@ export default function Schedules() {
             </div>
           ) : schedules.length === 0 ? (
             <div className="empty-state">
-              <img
-                src="https://images.unsplash.com/photo-1702478475268-aa8ef54c084e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDR8MHwxfHNlYXJjaHwxfHxzZXJ2ZXIlMjByYWNrc3xlbnwwfHx8fDE3NzI3MzMxNTd8MA&ixlib=rb-4.1.0&q=85&w=400"
-                alt="Empty state"
-                className="empty-state-image"
-              />
+              <Clock className="w-16 h-16 text-muted-foreground mb-4" />
               <p className="empty-state-title">No scheduled deployments</p>
-              <p className="empty-state-description">
-                Set up automated deployments to keep your static site in sync with WordPress.
-              </p>
-              <Button className="btn-primary-glow" onClick={() => setIsDialogOpen(true)} data-testid="create-first-schedule-btn">
-                <Clock className="w-4 h-4 mr-2" />
-                Create First Schedule
-              </Button>
+              <p className="empty-state-description">Set up automated deployments with cron schedules.</p>
+              {canCreateSchedule && (
+                <Button className="btn-primary-glow" onClick={() => setIsDialogOpen(true)} data-testid="create-first-schedule-btn">
+                  <Clock className="w-4 h-4 mr-2" />Create First Schedule
+                </Button>
+              )}
             </div>
           ) : (
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>Site Profile</TableHead>
+                  <TableHead>Deployment</TableHead>
                   <TableHead>Schedule</TableHead>
-                  <TableHead>Last Run</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -205,44 +202,23 @@ export default function Schedules() {
                   <TableRow key={schedule.id} data-testid={`schedule-row-${schedule.id}`}>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <Globe className="w-4 h-4 text-primary" />
-                        <span className="font-medium">{schedule.profile_name}</span>
+                        <Link2 className="w-4 h-4 text-amber-500" />
+                        <span className="font-medium">{schedule.deployment_name}</span>
                       </div>
                     </TableCell>
                     <TableCell>
-                      <code className="font-mono text-xs bg-secondary px-2 py-1 rounded">
-                        {schedule.cron_expression}
-                      </code>
-                    </TableCell>
-                    <TableCell>
-                      {schedule.last_run ? (
-                        <span className="text-sm text-muted-foreground">
-                          {format(new Date(schedule.last_run), "MMM d, h:mm a")}
-                        </span>
-                      ) : (
-                        <span className="text-sm text-muted-foreground">Never</span>
-                      )}
+                      <code className="font-mono text-xs bg-secondary px-2 py-1 rounded">{schedule.cron_expression}</code>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
-                        <Switch
-                          checked={schedule.enabled}
-                          onCheckedChange={() => handleToggle(schedule)}
-                          data-testid={`toggle-schedule-${schedule.id}`}
-                        />
+                        <Switch checked={schedule.enabled} onCheckedChange={() => handleToggle(schedule)} data-testid={`toggle-schedule-${schedule.id}`} />
                         <span className={`text-xs ${schedule.enabled ? 'text-emerald-500' : 'text-muted-foreground'}`}>
                           {schedule.enabled ? 'Active' : 'Inactive'}
                         </span>
                       </div>
                     </TableCell>
                     <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive"
-                        onClick={() => openDeleteDialog(schedule)}
-                        data-testid={`delete-schedule-${schedule.id}-btn`}
-                      >
+                      <Button variant="ghost" size="icon" className="h-8 w-8 text-destructive hover:text-destructive" onClick={() => { setSelectedSchedule(schedule); setIsDeleteDialogOpen(true); }} data-testid={`delete-schedule-${schedule.id}-btn`}>
                         <Trash2 className="w-4 h-4" />
                       </Button>
                     </TableCell>
@@ -254,12 +230,11 @@ export default function Schedules() {
         </CardContent>
       </Card>
 
-      {/* Cron Reference Card */}
+      {/* Cron Reference */}
       <Card className="bg-card border-border mt-6">
         <CardHeader>
           <CardTitle className="font-heading text-base flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-primary" />
-            Cron Expression Reference
+            <Calendar className="w-4 h-4 text-primary" />Cron Reference
           </CardTitle>
         </CardHeader>
         <CardContent>
@@ -271,9 +246,6 @@ export default function Schedules() {
               </div>
             ))}
           </div>
-          <p className="text-xs text-muted-foreground mt-4">
-            Format: minute hour day month weekday (e.g., "0 0 * * *" = daily at midnight)
-          </p>
         </CardContent>
       </Card>
 
@@ -281,71 +253,45 @@ export default function Schedules() {
       <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
         <DialogContent className="sm:max-w-[425px] bg-card border-border">
           <DialogHeader>
-            <DialogTitle className="font-heading">Create Scheduled Deployment</DialogTitle>
-            <DialogDescription>
-              Set up automated deployments for your WordPress site.
-            </DialogDescription>
+            <DialogTitle className="font-heading">Create Schedule</DialogTitle>
+            <DialogDescription>Schedule automated deployments.</DialogDescription>
           </DialogHeader>
-
           <div className="grid gap-4 py-4">
             <div className="form-group">
-              <Label htmlFor="profile" className="form-label">Site Profile</Label>
-              <Select value={selectedProfileId} onValueChange={setSelectedProfileId}>
-                <SelectTrigger data-testid="schedule-profile-select">
-                  <SelectValue placeholder="Select a site profile" />
+              <Label className="form-label">Deployment</Label>
+              <Select value={selectedConfigId} onValueChange={setSelectedConfigId}>
+                <SelectTrigger data-testid="schedule-deployment-select">
+                  <SelectValue placeholder="Select a deployment" />
                 </SelectTrigger>
                 <SelectContent>
-                  {profiles.map((profile) => (
-                    <SelectItem key={profile.id} value={profile.id}>
-                      {profile.name}
-                    </SelectItem>
+                  {deployments.map((d) => (
+                    <SelectItem key={d.id} value={d.id}>{d.name}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-
             <div className="form-group">
-              <Label htmlFor="preset" className="form-label">Schedule Preset</Label>
+              <Label className="form-label">Schedule Preset</Label>
               <Select value={cronExpression} onValueChange={setCronExpression}>
                 <SelectTrigger data-testid="schedule-preset-select">
                   <SelectValue placeholder="Select a schedule" />
                 </SelectTrigger>
                 <SelectContent>
                   {cronPresets.map((preset, index) => (
-                    <SelectItem key={index} value={preset.value}>
-                      {preset.label}
-                    </SelectItem>
+                    <SelectItem key={index} value={preset.value}>{preset.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
             </div>
-
             <div className="form-group">
-              <Label htmlFor="cron" className="form-label">Custom Cron Expression</Label>
-              <Input
-                id="cron"
-                value={cronExpression}
-                onChange={(e) => setCronExpression(e.target.value)}
-                placeholder="0 0 * * *"
-                className="font-mono"
-                data-testid="cron-input"
-              />
-              <p className="form-hint">Or enter a custom cron expression</p>
+              <Label className="form-label">Custom Cron</Label>
+              <Input value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 0 * * *" className="font-mono" data-testid="cron-input" />
             </div>
           </div>
-
           <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDialogOpen(false)} data-testid="cancel-schedule-btn">
-              Cancel
-            </Button>
-            <Button 
-              onClick={handleCreate} 
-              disabled={saving || !selectedProfileId}
-              className="btn-primary-glow"
-              data-testid="save-schedule-btn"
-            >
-              {saving ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : null}
-              Create Schedule
+            <Button variant="outline" onClick={() => setIsDialogOpen(false)} data-testid="cancel-schedule-btn">Cancel</Button>
+            <Button onClick={handleCreate} disabled={saving || !selectedConfigId} className="btn-primary-glow" data-testid="save-schedule-btn">
+              {saving ? <RefreshCw className="w-4 h-4 animate-spin mr-2" /> : null}Create
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -356,19 +302,11 @@ export default function Schedules() {
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Schedule</AlertDialogTitle>
-            <AlertDialogDescription>
-              Are you sure you want to delete this scheduled deployment? This action cannot be undone.
-            </AlertDialogDescription>
+            <AlertDialogDescription>Are you sure? This cannot be undone.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel data-testid="cancel-delete-schedule-btn">Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleDelete}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              data-testid="confirm-delete-schedule-btn"
-            >
-              Delete
-            </AlertDialogAction>
+            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90" data-testid="confirm-delete-schedule-btn">Delete</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>

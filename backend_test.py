@@ -11,7 +11,9 @@ class WPStaticDeployerAPITester:
         self.api_base = f"{base_url}/api"
         self.tests_run = 0
         self.tests_passed = 0
-        self.created_profile_id = None
+        self.created_source_id = None
+        self.created_destination_id = None
+        self.created_deployment_id = None
 
     def run_test(self, name, method, endpoint, expected_status, data=None, params=None):
         """Run a single API test"""
@@ -67,7 +69,7 @@ class WPStaticDeployerAPITester:
         )
 
     def test_stats_endpoint_empty(self):
-        """Test stats endpoint returns zeros initially"""
+        """Test stats endpoint returns correct structure initially"""
         success, response = self.run_test(
             "Stats Endpoint (Empty State)",
             "GET", 
@@ -76,7 +78,7 @@ class WPStaticDeployerAPITester:
         )
         
         if success:
-            expected_keys = ['total_sites', 'total_deployments', 'successful_deployments', 'failed_deployments', 'active_schedules', 'recent_activity']
+            expected_keys = ['total_sources', 'total_destinations', 'total_deployments', 'total_runs', 'successful_runs', 'failed_runs', 'active_schedules', 'recent_activity']
             for key in expected_keys:
                 if key not in response:
                     print(f"   ❌ Missing key: {key}")
@@ -85,81 +87,242 @@ class WPStaticDeployerAPITester:
         
         return success
 
-    def test_profiles_empty(self):
-        """Test profiles endpoint returns empty array initially"""
+    def test_sources_empty(self):
+        """Test sources endpoint returns empty array initially"""
         success, response = self.run_test(
-            "Profiles Endpoint (Empty State)",
+            "Sources Endpoint (Empty State)",
             "GET",
-            "profiles", 
+            "sources", 
             200
         )
         
         if success and isinstance(response, list):
-            print(f"   ✅ Returned list with {len(response)} profiles")
+            print(f"   ✅ Returned list with {len(response)} sources")
         elif success:
             print(f"   ❌ Expected list, got {type(response)}")
             return False
             
         return success
 
-    def test_create_profile(self):
-        """Test creating a new site profile"""
-        profile_data = {
-            "name": "Test WordPress Site",
-            "wordpress_url": "https://test.wordpress.com",
-            "wordpress_root": "/",
-            "external_host": "ftp.example.com",
-            "external_port": 21,
-            "external_protocol": "ftp",
-            "external_username": "testuser",
-            "external_password": "testpass",
-            "external_root": "/public_html",
-            "external_url": "https://test.static.com"
-        }
-        
+    def test_destinations_empty(self):
+        """Test destinations endpoint returns empty array initially"""
         success, response = self.run_test(
-            "Create Site Profile",
-            "POST",
-            "profiles",
-            200,
-            data=profile_data
-        )
-        
-        if success and 'id' in response:
-            self.created_profile_id = response['id']
-            print(f"   ✅ Profile created with ID: {self.created_profile_id}")
-        
-        return success
-
-    def test_get_profile_by_id(self):
-        """Test retrieving a specific profile by ID"""
-        if not self.created_profile_id:
-            print("   ⚠️  Skipping - No profile ID available")
-            return True
-            
-        return self.run_test(
-            "Get Profile by ID",
+            "Destinations Endpoint (Empty State)",
             "GET",
-            f"profiles/{self.created_profile_id}",
-            200
-        )
-
-    def test_profiles_after_creation(self):
-        """Test profiles endpoint returns the created profile"""
-        success, response = self.run_test(
-            "Profiles After Creation",
-            "GET",
-            "profiles",
+            "destinations", 
             200
         )
         
-        if success and isinstance(response, list) and len(response) > 0:
-            print(f"   ✅ Found {len(response)} profile(s)")
-        elif success and len(response) == 0:
-            print(f"   ❌ Expected at least 1 profile, got empty list")
+        if success and isinstance(response, list):
+            print(f"   ✅ Returned list with {len(response)} destinations")
+        elif success:
+            print(f"   ❌ Expected list, got {type(response)}")
             return False
             
         return success
+
+    def test_deployment_configs_empty(self):
+        """Test deployment-configs endpoint returns empty array initially"""
+        success, response = self.run_test(
+            "Deployment Configs Endpoint (Empty State)",
+            "GET",
+            "deployment-configs", 
+            200
+        )
+        
+        if success and isinstance(response, list):
+            print(f"   ✅ Returned list with {len(response)} deployment configs")
+        elif success:
+            print(f"   ❌ Expected list, got {type(response)}")
+            return False
+            
+        return success
+
+    def test_create_source(self):
+        """Test creating a new WordPress source"""
+        source_data = {
+            "name": "Test WordPress Site",
+            "url": "https://test.wordpress.com",
+            "root_path": "/",
+            "description": "Test source for API validation"
+        }
+        
+        success, response = self.run_test(
+            "Create Source",
+            "POST",
+            "sources",
+            200,
+            data=source_data
+        )
+        
+        if success and 'id' in response:
+            self.created_source_id = response['id']
+            print(f"   ✅ Source created with ID: {self.created_source_id}")
+        
+        return success
+
+    def test_create_destination(self):
+        """Test creating a new FTP/SFTP destination"""
+        destination_data = {
+            "name": "Test FTP Server",
+            "host": "ftp.example.com",
+            "port": 21,
+            "protocol": "ftp",
+            "username": "testuser",
+            "password": "testpass123",
+            "root_path": "/public_html",
+            "public_url": "https://test.static.com",
+            "description": "Test destination for API validation"
+        }
+        
+        success, response = self.run_test(
+            "Create Destination",
+            "POST",
+            "destinations",
+            200,
+            data=destination_data
+        )
+        
+        if success and 'id' in response:
+            self.created_destination_id = response['id']
+            print(f"   ✅ Destination created with ID: {self.created_destination_id}")
+            
+            # Verify password is masked
+            if 'password' in response and response['password'] == "••••••••":
+                print(f"   ✅ Password properly masked in response")
+            elif 'password' in response:
+                print(f"   ❌ Password not masked: {response['password']}")
+                return False
+        
+        return success
+
+    def test_create_deployment_config(self):
+        """Test creating a deployment configuration"""
+        if not self.created_source_id or not self.created_destination_id:
+            print("   ⚠️  Skipping - Missing source or destination ID")
+            return True
+            
+        deployment_data = {
+            "name": "Test Deployment",
+            "source_id": self.created_source_id,
+            "destination_id": self.created_destination_id,
+            "description": "Test deployment configuration",
+            "auto_crawl": True
+        }
+        
+        success, response = self.run_test(
+            "Create Deployment Config",
+            "POST",
+            "deployment-configs",
+            200,
+            data=deployment_data
+        )
+        
+        if success and 'id' in response:
+            self.created_deployment_id = response['id']
+            print(f"   ✅ Deployment config created with ID: {self.created_deployment_id}")
+            
+            # Verify source and destination names are populated
+            if 'source_name' in response and 'destination_name' in response:
+                print(f"   ✅ Source/Destination names populated")
+            else:
+                print(f"   ❌ Missing source_name or destination_name in response")
+                return False
+        
+        return success
+
+    def test_get_source_by_id(self):
+        """Test retrieving a specific source by ID"""
+        if not self.created_source_id:
+            print("   ⚠️  Skipping - No source ID available")
+            return True
+            
+        return self.run_test(
+            "Get Source by ID",
+            "GET",
+            f"sources/{self.created_source_id}",
+            200
+        )[0]
+
+    def test_get_destination_by_id(self):
+        """Test retrieving a specific destination by ID"""
+        if not self.created_destination_id:
+            print("   ⚠️  Skipping - No destination ID available")
+            return True
+            
+        success, response = self.run_test(
+            "Get Destination by ID",
+            "GET",
+            f"destinations/{self.created_destination_id}",
+            200
+        )
+        
+        if success and 'password' in response and response['password'] == "••••••••":
+            print(f"   ✅ Password properly masked in GET response")
+        elif success:
+            print(f"   ❌ Password not masked in GET response")
+            return False
+            
+        return success
+
+    def test_get_deployment_config_by_id(self):
+        """Test retrieving a specific deployment config by ID"""
+        if not self.created_deployment_id:
+            print("   ⚠️  Skipping - No deployment config ID available")
+            return True
+            
+        return self.run_test(
+            "Get Deployment Config by ID",
+            "GET",
+            f"deployment-configs/{self.created_deployment_id}",
+            200
+        )[0]
+
+    def test_lists_after_creation(self):
+        """Test list endpoints return the created items"""
+        # Test sources list
+        success1, sources = self.run_test(
+            "Sources After Creation",
+            "GET",
+            "sources",
+            200
+        )
+        
+        if success1 and isinstance(sources, list) and len(sources) > 0:
+            print(f"   ✅ Found {len(sources)} source(s)")
+        elif success1:
+            print(f"   ❌ Expected at least 1 source, got {len(sources) if isinstance(sources, list) else 'non-list'}")
+            success1 = False
+        
+        # Test destinations list
+        success2, destinations = self.run_test(
+            "Destinations After Creation",
+            "GET",
+            "destinations",
+            200
+        )
+        
+        if success2 and isinstance(destinations, list) and len(destinations) > 0:
+            print(f"   ✅ Found {len(destinations)} destination(s)")
+        elif success2:
+            print(f"   ❌ Expected at least 1 destination, got {len(destinations) if isinstance(destinations, list) else 'non-list'}")
+            success2 = False
+            
+        # Test deployment configs list
+        success3, deployments = self.run_test(
+            "Deployment Configs After Creation",
+            "GET",
+            "deployment-configs",
+            200
+        )
+        
+        if success3 and isinstance(deployments, list) and len(deployments) > 0:
+            print(f"   ✅ Found {len(deployments)} deployment config(s)")
+        elif success3:
+            print(f"   ❌ Expected at least 1 deployment config, got {len(deployments) if isinstance(deployments, list) else 'non-list'}")
+            success3 = False
+            
+        return success1 and success2 and success3
 
     def test_schedules_empty(self):
         """Test schedules endpoint"""
@@ -180,29 +343,45 @@ class WPStaticDeployerAPITester:
         )
 
     def test_crawler_endpoints(self):
-        """Test crawler endpoints (should fail without valid WordPress site)"""
-        if not self.created_profile_id:
-            print("   ⚠️  Skipping crawler tests - No profile ID available")
+        """Test crawler endpoints"""
+        if not self.created_source_id:
+            print("   ⚠️  Skipping crawler tests - No source ID available")
             return True
 
-        # This will likely fail due to fake WordPress URL, but should return proper error
+        # Start crawler - this will likely fail due to fake URL but should return proper structure
         success, response = self.run_test(
-            "Start Crawler (Expected to fail with fake URL)",
+            "Start Crawler (Expected to work at API level)",
             "POST",
-            f"crawler/start/{self.created_profile_id}",
-            200  # Should still return 200 with job_id, even if job will fail
+            f"crawler/start/{self.created_source_id}",
+            200
         )
         
-        return True  # We expect this to work at API level, even if crawl fails
+        if success and 'job_id' in response:
+            job_id = response['job_id']
+            print(f"   ✅ Crawler started with job_id: {job_id}")
+            
+            # Test crawler status endpoint
+            status_success, status_response = self.run_test(
+                "Get Crawler Status",
+                "GET",
+                f"crawler/status/{job_id}",
+                200
+            )
+            
+            if status_success and 'status' in status_response:
+                print(f"   ✅ Crawler status: {status_response['status']}")
+                return True
+        
+        return success
 
     def test_compare_endpoints(self):
         """Test comparison endpoints"""
-        if not self.created_profile_id:
-            print("   ⚠️  Skipping compare tests - No profile ID available")
+        if not self.created_deployment_id:
+            print("   ⚠️  Skipping compare tests - No deployment config ID available")
             return True
 
         compare_data = {
-            "profile_id": self.created_profile_id,
+            "deployment_config_id": self.created_deployment_id,
             "page_path": "/"
         }
 
@@ -229,20 +408,34 @@ class WPStaticDeployerAPITester:
     def test_invalid_endpoints(self):
         """Test some invalid endpoints return proper errors"""
         success1, _ = self.run_test(
-            "Invalid Profile ID",
+            "Invalid Source ID",
             "GET",
-            "profiles/invalid-id",
+            "sources/invalid-id",
             404
         )
         
         success2, _ = self.run_test(
+            "Invalid Destination ID",
+            "GET", 
+            "destinations/invalid-id",
+            404
+        )
+        
+        success3, _ = self.run_test(
+            "Invalid Deployment Config ID",
+            "GET",
+            "deployment-configs/invalid-id", 
+            404
+        )
+        
+        success4, _ = self.run_test(
             "Invalid Crawler Job ID",
             "GET", 
             "crawler/status/invalid-job-id",
             404
         )
         
-        return success1 and success2
+        return success1 and success2 and success3 and success4
 
 def main():
     """Run all API tests"""
@@ -258,7 +451,9 @@ def main():
     tests = [
         tester.test_root_endpoint,
         tester.test_stats_endpoint_empty,
-        tester.test_profiles_empty,
+        tester.test_sources_empty,
+        tester.test_destinations_empty,
+        tester.test_deployment_configs_empty,
         tester.test_schedules_empty,
         tester.test_history_empty,
     ]
@@ -266,17 +461,21 @@ def main():
     for test in tests:
         test()
 
-    # Profile CRUD tests
-    print("\n🏗️  PROFILE CRUD TESTS")
+    # CRUD tests
+    print("\n🏗️  CRUD TESTS")
     print("-" * 40)
     
-    profile_tests = [
-        tester.test_create_profile,
-        tester.test_get_profile_by_id,
-        tester.test_profiles_after_creation,
+    crud_tests = [
+        tester.test_create_source,
+        tester.test_create_destination,
+        tester.test_create_deployment_config,
+        tester.test_get_source_by_id,
+        tester.test_get_destination_by_id,
+        tester.test_get_deployment_config_by_id,
+        tester.test_lists_after_creation,
     ]
     
-    for test in profile_tests:
+    for test in crud_tests:
         test()
 
     # Advanced feature tests

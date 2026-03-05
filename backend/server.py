@@ -44,7 +44,6 @@ logger = logging.getLogger(__name__)
 
 # ============ ENCRYPTION UTILITIES ============
 
-# Get or generate encryption key from environment
 ENCRYPTION_KEY = os.environ.get('ENCRYPTION_KEY', 'wp-static-deployer-secret-key-2026')
 
 def get_fernet():
@@ -52,7 +51,7 @@ def get_fernet():
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
-        salt=b'wp-static-salt-v1',  # Static salt for consistency
+        salt=b'wp-static-salt-v1',
         iterations=100000,
     )
     key = base64.urlsafe_b64encode(kdf.derive(ENCRYPTION_KEY.encode()))
@@ -87,38 +86,74 @@ def mask_password(password: str) -> str:
 
 # ============ MODELS ============
 
-class SiteProfileBase(BaseModel):
+# Source: WordPress site to crawl (no credentials needed)
+class SourceBase(BaseModel):
     name: str
-    wordpress_url: str
-    wordpress_root: str = "/"
-    external_host: str
-    external_port: int = 21
-    external_protocol: str = "ftp"  # ftp or sftp
-    external_username: str
-    external_password: str = ""
-    external_root: str = "/public_html"
-    external_url: str = ""
+    url: str  # WordPress site URL
+    root_path: str = "/"  # Starting path to crawl
+    description: Optional[str] = ""
 
-class SiteProfileCreate(SiteProfileBase):
+class SourceCreate(SourceBase):
     pass
 
-class SiteProfile(SiteProfileBase):
+class Source(SourceBase):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_crawl: Optional[str] = None
+
+# Destination: FTP/SFTP host for deployment
+class DestinationBase(BaseModel):
+    name: str
+    host: str
+    port: int = 21
+    protocol: str = "ftp"  # ftp or sftp
+    username: str
+    password: str = ""
+    root_path: str = "/public_html"  # Where to deploy files
+    public_url: Optional[str] = ""  # Public URL of deployed site (for comparison)
+    description: Optional[str] = ""
+
+class DestinationCreate(DestinationBase):
+    pass
+
+class Destination(DestinationBase):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     last_deployment: Optional[str] = None
-    last_crawl: Optional[str] = None
-    has_password: Optional[bool] = False
-
-class SiteProfileResponse(SiteProfile):
-    """Response model that includes password status indicator"""
     has_password: bool = False
 
+# Deployment Configuration: Links one source to one destination
+class DeploymentConfigBase(BaseModel):
+    name: str
+    source_id: str
+    destination_id: str
+    description: Optional[str] = ""
+    auto_crawl: bool = True  # Crawl before deploying
+
+class DeploymentConfigCreate(DeploymentConfigBase):
+    pass
+
+class DeploymentConfig(DeploymentConfigBase):
+    model_config = ConfigDict(extra="ignore")
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    updated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    last_run: Optional[str] = None
+    source_name: Optional[str] = None
+    destination_name: Optional[str] = None
+
+# Deployment History
 class DeploymentHistoryBase(BaseModel):
-    profile_id: str
-    profile_name: str
-    status: str = "pending"  # pending, running, success, failed
+    deployment_config_id: str
+    deployment_name: str
+    source_name: str
+    destination_name: str
+    status: str = "pending"  # pending, crawling, deploying, success, failed
+    pages_crawled: int = 0
     files_deployed: int = 0
     files_failed: int = 0
     logs: List[str] = []
@@ -130,11 +165,12 @@ class DeploymentHistory(DeploymentHistoryBase):
     started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     completed_at: Optional[str] = None
 
+# Scheduled Deployment
 class ScheduledDeployment(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    profile_id: str
-    profile_name: str
+    deployment_config_id: str
+    deployment_name: str
     cron_expression: str
     enabled: bool = True
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
@@ -142,119 +178,234 @@ class ScheduledDeployment(BaseModel):
     next_run: Optional[str] = None
 
 class ScheduledDeploymentCreate(BaseModel):
-    profile_id: str
+    deployment_config_id: str
     cron_expression: str
     enabled: bool = True
 
+# Comparison
+class CompareRequest(BaseModel):
+    deployment_config_id: str
+    page_path: str = "/"
+
+class CompareResult(BaseModel):
+    source_content: str
+    destination_content: str
+    differences: List[Dict[str, Any]]
+    has_differences: bool
+
+class FileCompareResult(BaseModel):
+    source_files: List[str]
+    destination_files: List[str]
+    added: List[str]
+    removed: List[str]
+    modified: List[str]
+
 class CrawlJobStatus(BaseModel):
     job_id: str
-    status: str  # pending, running, completed, failed
+    status: str
     pages_crawled: int = 0
     total_pages: int = 0
     current_url: Optional[str] = None
     files: List[str] = []
     errors: List[str] = []
 
-class CompareRequest(BaseModel):
-    profile_id: str
-    page_path: str = "/"
+# ============ SOURCE ENDPOINTS ============
 
-class CompareResult(BaseModel):
-    internal_content: str
-    external_content: str
-    differences: List[Dict[str, Any]]
-    has_differences: bool
+@api_router.get("/sources", response_model=List[Source])
+async def get_sources():
+    sources = await db.sources.find({}, {"_id": 0}).to_list(100)
+    return sources
 
-class FileCompareResult(BaseModel):
-    internal_files: List[str]
-    external_files: List[str]
-    added: List[str]
-    removed: List[str]
-    modified: List[str]
+@api_router.get("/sources/{source_id}", response_model=Source)
+async def get_source(source_id: str):
+    source = await db.sources.find_one({"id": source_id}, {"_id": 0})
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return source
 
-# ============ SITE PROFILES ENDPOINTS ============
+@api_router.post("/sources", response_model=Source)
+async def create_source(source_data: SourceCreate):
+    source = Source(**source_data.model_dump())
+    await db.sources.insert_one(source.model_dump())
+    return source
 
-@api_router.get("/profiles", response_model=List[SiteProfile])
-async def get_profiles():
-    profiles = await db.site_profiles.find({}, {"_id": 0}).to_list(100)
-    # Mask passwords in response (never send actual passwords to frontend)
-    for profile in profiles:
-        profile["external_password"] = mask_password(profile.get("external_password", ""))
-        # Add flag to indicate password is set
-        profile["has_password"] = bool(profile.get("encrypted_password"))
-    return profiles
-
-@api_router.get("/profiles/{profile_id}", response_model=SiteProfile)
-async def get_profile(profile_id: str):
-    profile = await db.site_profiles.find_one({"id": profile_id}, {"_id": 0})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    # Mask password in response
-    profile["external_password"] = mask_password(profile.get("external_password", ""))
-    profile["has_password"] = bool(profile.get("encrypted_password"))
-    return profile
-
-@api_router.post("/profiles", response_model=SiteProfile)
-async def create_profile(profile_data: SiteProfileCreate):
-    profile = SiteProfile(**profile_data.model_dump())
-    profile_dict = profile.model_dump()
-    
-    # Encrypt the password before storing
-    if profile_dict.get("external_password"):
-        profile_dict["encrypted_password"] = encrypt_password(profile_dict["external_password"])
-        profile_dict["external_password"] = ""  # Don't store plain text
-    
-    await db.site_profiles.insert_one(profile_dict)
-    
-    # Return masked password in response
-    profile_dict["external_password"] = mask_password(profile_data.external_password)
-    profile_dict["has_password"] = bool(profile_data.external_password)
-    return profile_dict
-
-@api_router.put("/profiles/{profile_id}", response_model=SiteProfile)
-async def update_profile(profile_id: str, profile_data: SiteProfileCreate):
-    existing = await db.site_profiles.find_one({"id": profile_id}, {"_id": 0})
+@api_router.put("/sources/{source_id}", response_model=Source)
+async def update_source(source_id: str, source_data: SourceCreate):
+    existing = await db.sources.find_one({"id": source_id}, {"_id": 0})
     if not existing:
-        raise HTTPException(status_code=404, detail="Profile not found")
+        raise HTTPException(status_code=404, detail="Source not found")
     
-    updated_data = profile_data.model_dump()
-    updated_data["id"] = profile_id
+    updated_data = source_data.model_dump()
+    updated_data["id"] = source_id
+    updated_data["created_at"] = existing.get("created_at", datetime.now(timezone.utc).isoformat())
+    updated_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    updated_data["last_crawl"] = existing.get("last_crawl")
+    
+    await db.sources.update_one({"id": source_id}, {"$set": updated_data})
+    return updated_data
+
+@api_router.delete("/sources/{source_id}")
+async def delete_source(source_id: str):
+    result = await db.sources.delete_one({"id": source_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Source not found")
+    return {"message": "Source deleted"}
+
+# ============ DESTINATION ENDPOINTS ============
+
+@api_router.get("/destinations", response_model=List[Destination])
+async def get_destinations():
+    destinations = await db.destinations.find({}, {"_id": 0}).to_list(100)
+    for dest in destinations:
+        dest["password"] = mask_password(dest.get("password", ""))
+        dest["has_password"] = bool(dest.get("encrypted_password"))
+    return destinations
+
+@api_router.get("/destinations/{destination_id}", response_model=Destination)
+async def get_destination(destination_id: str):
+    destination = await db.destinations.find_one({"id": destination_id}, {"_id": 0})
+    if not destination:
+        raise HTTPException(status_code=404, detail="Destination not found")
+    destination["password"] = mask_password(destination.get("password", ""))
+    destination["has_password"] = bool(destination.get("encrypted_password"))
+    return destination
+
+@api_router.post("/destinations", response_model=Destination)
+async def create_destination(destination_data: DestinationCreate):
+    destination = Destination(**destination_data.model_dump())
+    dest_dict = destination.model_dump()
+    
+    # Encrypt password
+    if dest_dict.get("password"):
+        dest_dict["encrypted_password"] = encrypt_password(dest_dict["password"])
+        dest_dict["password"] = ""
+    
+    await db.destinations.insert_one(dest_dict)
+    
+    dest_dict["password"] = mask_password(destination_data.password)
+    dest_dict["has_password"] = bool(destination_data.password)
+    return dest_dict
+
+@api_router.put("/destinations/{destination_id}", response_model=Destination)
+async def update_destination(destination_id: str, destination_data: DestinationCreate):
+    existing = await db.destinations.find_one({"id": destination_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Destination not found")
+    
+    updated_data = destination_data.model_dump()
+    updated_data["id"] = destination_id
     updated_data["created_at"] = existing.get("created_at", datetime.now(timezone.utc).isoformat())
     updated_data["updated_at"] = datetime.now(timezone.utc).isoformat()
     updated_data["last_deployment"] = existing.get("last_deployment")
-    updated_data["last_crawl"] = existing.get("last_crawl")
     
-    # Handle password update
-    if updated_data.get("external_password") and updated_data["external_password"] != "••••••••":
-        # New password provided - encrypt it
-        updated_data["encrypted_password"] = encrypt_password(updated_data["external_password"])
-        updated_data["external_password"] = ""
+    # Handle password
+    if updated_data.get("password") and updated_data["password"] != "••••••••":
+        updated_data["encrypted_password"] = encrypt_password(updated_data["password"])
+        updated_data["password"] = ""
     else:
-        # Keep existing encrypted password
         updated_data["encrypted_password"] = existing.get("encrypted_password", "")
-        updated_data["external_password"] = ""
+        updated_data["password"] = ""
     
-    await db.site_profiles.update_one({"id": profile_id}, {"$set": updated_data})
+    await db.destinations.update_one({"id": destination_id}, {"$set": updated_data})
     
-    # Return masked password
-    updated_data["external_password"] = mask_password("password")
+    updated_data["password"] = mask_password("password")
     updated_data["has_password"] = bool(updated_data.get("encrypted_password"))
     return updated_data
 
-@api_router.delete("/profiles/{profile_id}")
-async def delete_profile(profile_id: str):
-    result = await db.site_profiles.delete_one({"id": profile_id})
+@api_router.delete("/destinations/{destination_id}")
+async def delete_destination(destination_id: str):
+    result = await db.destinations.delete_one({"id": destination_id})
     if result.deleted_count == 0:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    return {"message": "Profile deleted"}
+        raise HTTPException(status_code=404, detail="Destination not found")
+    return {"message": "Destination deleted"}
 
-# ============ CRAWLER ENDPOINTS ============
+# ============ DEPLOYMENT CONFIG ENDPOINTS ============
 
-async def crawl_website(job_id: str, profile: dict):
+@api_router.get("/deployment-configs", response_model=List[DeploymentConfig])
+async def get_deployment_configs():
+    configs = await db.deployment_configs.find({}, {"_id": 0}).to_list(100)
+    
+    # Enrich with source/destination names
+    for config in configs:
+        source = await db.sources.find_one({"id": config.get("source_id")}, {"_id": 0})
+        destination = await db.destinations.find_one({"id": config.get("destination_id")}, {"_id": 0})
+        config["source_name"] = source.get("name") if source else "Unknown"
+        config["destination_name"] = destination.get("name") if destination else "Unknown"
+    
+    return configs
+
+@api_router.get("/deployment-configs/{config_id}", response_model=DeploymentConfig)
+async def get_deployment_config(config_id: str):
+    config = await db.deployment_configs.find_one({"id": config_id}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
+    
+    source = await db.sources.find_one({"id": config.get("source_id")}, {"_id": 0})
+    destination = await db.destinations.find_one({"id": config.get("destination_id")}, {"_id": 0})
+    config["source_name"] = source.get("name") if source else "Unknown"
+    config["destination_name"] = destination.get("name") if destination else "Unknown"
+    
+    return config
+
+@api_router.post("/deployment-configs", response_model=DeploymentConfig)
+async def create_deployment_config(config_data: DeploymentConfigCreate):
+    # Validate source and destination exist
+    source = await db.sources.find_one({"id": config_data.source_id}, {"_id": 0})
+    if not source:
+        raise HTTPException(status_code=400, detail="Source not found")
+    
+    destination = await db.destinations.find_one({"id": config_data.destination_id}, {"_id": 0})
+    if not destination:
+        raise HTTPException(status_code=400, detail="Destination not found")
+    
+    config = DeploymentConfig(
+        **config_data.model_dump(),
+        source_name=source.get("name"),
+        destination_name=destination.get("name")
+    )
+    await db.deployment_configs.insert_one(config.model_dump())
+    return config
+
+@api_router.put("/deployment-configs/{config_id}", response_model=DeploymentConfig)
+async def update_deployment_config(config_id: str, config_data: DeploymentConfigCreate):
+    existing = await db.deployment_configs.find_one({"id": config_id}, {"_id": 0})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
+    
+    # Validate source and destination
+    source = await db.sources.find_one({"id": config_data.source_id}, {"_id": 0})
+    if not source:
+        raise HTTPException(status_code=400, detail="Source not found")
+    
+    destination = await db.destinations.find_one({"id": config_data.destination_id}, {"_id": 0})
+    if not destination:
+        raise HTTPException(status_code=400, detail="Destination not found")
+    
+    updated_data = config_data.model_dump()
+    updated_data["id"] = config_id
+    updated_data["created_at"] = existing.get("created_at", datetime.now(timezone.utc).isoformat())
+    updated_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+    updated_data["last_run"] = existing.get("last_run")
+    updated_data["source_name"] = source.get("name")
+    updated_data["destination_name"] = destination.get("name")
+    
+    await db.deployment_configs.update_one({"id": config_id}, {"$set": updated_data})
+    return updated_data
+
+@api_router.delete("/deployment-configs/{config_id}")
+async def delete_deployment_config(config_id: str):
+    result = await db.deployment_configs.delete_one({"id": config_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
+    return {"message": "Deployment config deleted"}
+
+# ============ CRAWLER ============
+
+async def crawl_website(job_id: str, source: dict):
     """Background task to crawl a WordPress website"""
     import requests
     from bs4 import BeautifulSoup
-    import re
+    from urllib.parse import urljoin, urlparse
     
     crawl_jobs[job_id] = {
         "status": "running",
@@ -265,17 +416,16 @@ async def crawl_website(job_id: str, profile: dict):
         "errors": []
     }
     
-    base_url = profile["wordpress_url"].rstrip("/")
+    base_url = source["url"].rstrip("/")
     visited = set()
-    to_visit = [base_url + profile.get("wordpress_root", "/")]
+    to_visit = [base_url + source.get("root_path", "/")]
     files_saved = []
     
-    # Create temp directory for crawled files
     crawl_dir = Path(f"/tmp/crawl_{job_id}")
     crawl_dir.mkdir(parents=True, exist_ok=True)
     
     try:
-        while to_visit and len(visited) < 500:  # Limit to 500 pages
+        while to_visit and len(visited) < 500:
             url = to_visit.pop(0)
             if url in visited:
                 continue
@@ -287,7 +437,7 @@ async def crawl_website(job_id: str, profile: dict):
             
             try:
                 response = requests.get(url, timeout=30, headers={
-                    "User-Agent": "WP-Static-Crawler/1.0"
+                    "User-Agent": "Staticify-Crawler/1.0"
                 })
                 
                 if response.status_code != 200:
@@ -310,13 +460,12 @@ async def crawl_website(job_id: str, profile: dict):
                         full_url = urljoin(url, href)
                         parsed = urlparse(full_url)
                         
-                        # Only crawl same-domain links
                         if parsed.netloc == urlparse(base_url).netloc:
                             clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                             if clean_url not in visited and clean_url not in to_visit:
                                 to_visit.append(clean_url)
                     
-                    # Download CSS, JS, Images
+                    # Download assets
                     for tag in soup.find_all(["link", "script", "img"]):
                         src = tag.get("href") or tag.get("src")
                         if src:
@@ -339,9 +488,9 @@ async def crawl_website(job_id: str, profile: dict):
                                             f.write(content)
                                         files_saved.append(asset_path)
                                 except Exception as e:
-                                    crawl_jobs[job_id]["errors"].append(f"Failed to download asset {asset_url}: {str(e)}")
+                                    crawl_jobs[job_id]["errors"].append(f"Failed to download {asset_url}: {str(e)}")
                     
-                    # Save HTML file
+                    # Save HTML
                     parsed_url = urlparse(url)
                     page_path = parsed_url.path.lstrip("/")
                     if not page_path or page_path.endswith("/"):
@@ -362,9 +511,8 @@ async def crawl_website(job_id: str, profile: dict):
         crawl_jobs[job_id]["status"] = "completed"
         crawl_jobs[job_id]["files"] = list(set(files_saved))
         
-        # Update profile with last crawl time
-        await db.site_profiles.update_one(
-            {"id": profile["id"]},
+        await db.sources.update_one(
+            {"id": source["id"]},
             {"$set": {"last_crawl": datetime.now(timezone.utc).isoformat()}}
         )
         
@@ -372,11 +520,11 @@ async def crawl_website(job_id: str, profile: dict):
         crawl_jobs[job_id]["status"] = "failed"
         crawl_jobs[job_id]["errors"].append(f"Crawl failed: {str(e)}")
 
-@api_router.post("/crawler/start/{profile_id}")
-async def start_crawler(profile_id: str, background_tasks: BackgroundTasks):
-    profile = await db.site_profiles.find_one({"id": profile_id}, {"_id": 0})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+@api_router.post("/crawler/start/{source_id}")
+async def start_crawler(source_id: str, background_tasks: BackgroundTasks):
+    source = await db.sources.find_one({"id": source_id}, {"_id": 0})
+    if not source:
+        raise HTTPException(status_code=404, detail="Source not found")
     
     job_id = str(uuid.uuid4())
     crawl_jobs[job_id] = {
@@ -385,10 +533,11 @@ async def start_crawler(profile_id: str, background_tasks: BackgroundTasks):
         "total_pages": 0,
         "current_url": None,
         "files": [],
-        "errors": []
+        "errors": [],
+        "source_id": source_id
     }
     
-    background_tasks.add_task(crawl_website, job_id, profile)
+    background_tasks.add_task(crawl_website, job_id, source)
     return {"job_id": job_id, "status": "started"}
 
 @api_router.get("/crawler/status/{job_id}")
@@ -397,11 +546,11 @@ async def get_crawler_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
     
     job = crawl_jobs[job_id]
-    return CrawlJobStatus(job_id=job_id, **job)
+    return CrawlJobStatus(job_id=job_id, **{k: v for k, v in job.items() if k != "source_id"})
 
-# ============ DEPLOYMENT ENDPOINTS ============
+# ============ DEPLOYMENT ============
 
-async def deploy_via_ftp(deployment_id: str, profile: dict, job_id: str):
+async def deploy_via_ftp(history_id: str, destination: dict, job_id: str):
     """Deploy files via FTP"""
     import ftplib
     
@@ -409,52 +558,42 @@ async def deploy_via_ftp(deployment_id: str, profile: dict, job_id: str):
     files_deployed = 0
     files_failed = 0
     
-    deployment_logs[deployment_id] = logs
+    deployment_logs[history_id] = logs
     
     try:
-        logs.append(f"[INFO] Connecting to {profile['external_host']}:{profile['external_port']} via FTP...")
+        logs.append(f"[INFO] Connecting to {destination['host']}:{destination['port']} via FTP...")
         
-        # Decrypt password for connection
-        password = decrypt_password(profile.get("encrypted_password", ""))
-        if not password and profile.get("external_password"):
-            password = profile["external_password"]  # Fallback for legacy data
+        password = decrypt_password(destination.get("encrypted_password", ""))
+        if not password and destination.get("password"):
+            password = destination["password"]
         
         ftp = ftplib.FTP()
-        ftp.connect(profile["external_host"], profile["external_port"], timeout=30)
-        ftp.login(profile["external_username"], password)
+        ftp.connect(destination["host"], destination["port"], timeout=30)
+        ftp.login(destination["username"], password)
         
-        logs.append("[SUCCESS] Connected successfully (credentials secured)")
+        logs.append("[SUCCESS] Connected successfully")
         
-        # Navigate to root directory
         try:
-            ftp.cwd(profile["external_root"])
-            logs.append(f"[INFO] Changed to directory: {profile['external_root']}")
+            ftp.cwd(destination["root_path"])
+            logs.append(f"[INFO] Changed to directory: {destination['root_path']}")
         except Exception:
-            logs.append(f"[WARNING] Could not change to {profile['external_root']}, using current directory")
+            logs.append(f"[WARNING] Could not change to {destination['root_path']}")
         
-        # Get crawled files
         crawl_dir = Path(f"/tmp/crawl_{job_id}")
         if not crawl_dir.exists():
-            logs.append("[ERROR] Crawl directory not found. Please run crawler first.")
+            logs.append("[ERROR] Crawl directory not found")
             await db.deployment_history.update_one(
-                {"id": deployment_id},
-                {"$set": {
-                    "status": "failed",
-                    "error_message": "Crawl directory not found",
-                    "logs": logs,
-                    "completed_at": datetime.now(timezone.utc).isoformat()
-                }}
+                {"id": history_id},
+                {"$set": {"status": "failed", "error_message": "Crawl directory not found", "logs": logs, "completed_at": datetime.now(timezone.utc).isoformat()}}
             )
             return
         
-        # Upload files
         for file_path in crawl_dir.rglob("*"):
             if file_path.is_file():
                 relative_path = file_path.relative_to(crawl_dir)
                 remote_path = str(relative_path)
                 
                 try:
-                    # Create directories if needed
                     remote_dir = str(relative_path.parent)
                     if remote_dir and remote_dir != ".":
                         dirs = remote_dir.split("/")
@@ -466,7 +605,6 @@ async def deploy_via_ftp(deployment_id: str, profile: dict, job_id: str):
                             except Exception:
                                 pass
                     
-                    # Upload file
                     with open(file_path, "rb") as f:
                         ftp.storbinary(f"STOR {remote_path}", f)
                     
@@ -475,42 +613,31 @@ async def deploy_via_ftp(deployment_id: str, profile: dict, job_id: str):
                     
                 except Exception as e:
                     files_failed += 1
-                    logs.append(f"[ERROR] Failed to upload {remote_path}: {str(e)}")
+                    logs.append(f"[ERROR] Failed: {remote_path} - {str(e)}")
         
         ftp.quit()
-        logs.append(f"[INFO] Deployment completed. {files_deployed} files uploaded, {files_failed} failed.")
+        logs.append(f"[INFO] Complete. {files_deployed} uploaded, {files_failed} failed")
         
         status = "success" if files_failed == 0 else "partial"
         
         await db.deployment_history.update_one(
-            {"id": deployment_id},
-            {"$set": {
-                "status": status,
-                "files_deployed": files_deployed,
-                "files_failed": files_failed,
-                "logs": logs,
-                "completed_at": datetime.now(timezone.utc).isoformat()
-            }}
+            {"id": history_id},
+            {"$set": {"status": status, "files_deployed": files_deployed, "files_failed": files_failed, "logs": logs, "completed_at": datetime.now(timezone.utc).isoformat()}}
         )
         
-        await db.site_profiles.update_one(
-            {"id": profile["id"]},
+        await db.destinations.update_one(
+            {"id": destination["id"]},
             {"$set": {"last_deployment": datetime.now(timezone.utc).isoformat()}}
         )
         
     except Exception as e:
         logs.append(f"[ERROR] Deployment failed: {str(e)}")
         await db.deployment_history.update_one(
-            {"id": deployment_id},
-            {"$set": {
-                "status": "failed",
-                "error_message": str(e),
-                "logs": logs,
-                "completed_at": datetime.now(timezone.utc).isoformat()
-            }}
+            {"id": history_id},
+            {"$set": {"status": "failed", "error_message": str(e), "logs": logs, "completed_at": datetime.now(timezone.utc).isoformat()}}
         )
 
-async def deploy_via_sftp(deployment_id: str, profile: dict, job_id: str):
+async def deploy_via_sftp(history_id: str, destination: dict, job_id: str):
     """Deploy files via SFTP"""
     import paramiko
     
@@ -518,47 +645,38 @@ async def deploy_via_sftp(deployment_id: str, profile: dict, job_id: str):
     files_deployed = 0
     files_failed = 0
     
-    deployment_logs[deployment_id] = logs
+    deployment_logs[history_id] = logs
     
     try:
-        logs.append(f"[INFO] Connecting to {profile['external_host']}:{profile['external_port']} via SFTP...")
+        logs.append(f"[INFO] Connecting to {destination['host']}:{destination['port']} via SFTP...")
         
-        # Decrypt password for connection
-        password = decrypt_password(profile.get("encrypted_password", ""))
-        if not password and profile.get("external_password"):
-            password = profile["external_password"]  # Fallback for legacy data
+        password = decrypt_password(destination.get("encrypted_password", ""))
+        if not password and destination.get("password"):
+            password = destination["password"]
         
-        transport = paramiko.Transport((profile["external_host"], profile["external_port"]))
-        transport.connect(username=profile["external_username"], password=password)
+        transport = paramiko.Transport((destination["host"], destination["port"]))
+        transport.connect(username=destination["username"], password=password)
         sftp = paramiko.SFTPClient.from_transport(transport)
         
-        logs.append("[SUCCESS] Connected successfully (credentials secured)")
+        logs.append("[SUCCESS] Connected successfully")
         
-        # Get crawled files
         crawl_dir = Path(f"/tmp/crawl_{job_id}")
         if not crawl_dir.exists():
-            logs.append("[ERROR] Crawl directory not found. Please run crawler first.")
+            logs.append("[ERROR] Crawl directory not found")
             await db.deployment_history.update_one(
-                {"id": deployment_id},
-                {"$set": {
-                    "status": "failed",
-                    "error_message": "Crawl directory not found",
-                    "logs": logs,
-                    "completed_at": datetime.now(timezone.utc).isoformat()
-                }}
+                {"id": history_id},
+                {"$set": {"status": "failed", "error_message": "Crawl directory not found", "logs": logs, "completed_at": datetime.now(timezone.utc).isoformat()}}
             )
             return
         
-        remote_root = profile["external_root"]
+        remote_root = destination["root_path"]
         
-        # Upload files
         for file_path in crawl_dir.rglob("*"):
             if file_path.is_file():
                 relative_path = file_path.relative_to(crawl_dir)
                 remote_path = f"{remote_root}/{relative_path}"
                 
                 try:
-                    # Create directories if needed
                     dirs = str(relative_path.parent).split("/")
                     current = remote_root
                     for d in dirs:
@@ -569,81 +687,81 @@ async def deploy_via_sftp(deployment_id: str, profile: dict, job_id: str):
                             except Exception:
                                 pass
                     
-                    # Upload file
                     sftp.put(str(file_path), remote_path)
-                    
                     files_deployed += 1
                     logs.append(f"[SUCCESS] Uploaded: {relative_path}")
                     
                 except Exception as e:
                     files_failed += 1
-                    logs.append(f"[ERROR] Failed to upload {relative_path}: {str(e)}")
+                    logs.append(f"[ERROR] Failed: {relative_path} - {str(e)}")
         
         sftp.close()
         transport.close()
-        logs.append(f"[INFO] Deployment completed. {files_deployed} files uploaded, {files_failed} failed.")
+        logs.append(f"[INFO] Complete. {files_deployed} uploaded, {files_failed} failed")
         
         status = "success" if files_failed == 0 else "partial"
         
         await db.deployment_history.update_one(
-            {"id": deployment_id},
-            {"$set": {
-                "status": status,
-                "files_deployed": files_deployed,
-                "files_failed": files_failed,
-                "logs": logs,
-                "completed_at": datetime.now(timezone.utc).isoformat()
-            }}
+            {"id": history_id},
+            {"$set": {"status": status, "files_deployed": files_deployed, "files_failed": files_failed, "logs": logs, "completed_at": datetime.now(timezone.utc).isoformat()}}
         )
         
-        await db.site_profiles.update_one(
-            {"id": profile["id"]},
+        await db.destinations.update_one(
+            {"id": destination["id"]},
             {"$set": {"last_deployment": datetime.now(timezone.utc).isoformat()}}
         )
         
     except Exception as e:
         logs.append(f"[ERROR] Deployment failed: {str(e)}")
         await db.deployment_history.update_one(
-            {"id": deployment_id},
-            {"$set": {
-                "status": "failed",
-                "error_message": str(e),
-                "logs": logs,
-                "completed_at": datetime.now(timezone.utc).isoformat()
-            }}
+            {"id": history_id},
+            {"$set": {"status": "failed", "error_message": str(e), "logs": logs, "completed_at": datetime.now(timezone.utc).isoformat()}}
         )
 
-@api_router.post("/deploy/{profile_id}")
-async def start_deployment(profile_id: str, background_tasks: BackgroundTasks, job_id: Optional[str] = None):
-    profile = await db.site_profiles.find_one({"id": profile_id}, {"_id": 0})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+@api_router.post("/deploy/{config_id}")
+async def start_deployment(config_id: str, background_tasks: BackgroundTasks, job_id: Optional[str] = None):
+    config = await db.deployment_configs.find_one({"id": config_id}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
     
-    # Find the most recent crawl job for this profile
+    source = await db.sources.find_one({"id": config["source_id"]}, {"_id": 0})
+    destination = await db.destinations.find_one({"id": config["destination_id"]}, {"_id": 0})
+    
+    if not source:
+        raise HTTPException(status_code=400, detail="Source not found")
+    if not destination:
+        raise HTTPException(status_code=400, detail="Destination not found")
+    
     if not job_id:
-        # Look for any recent crawl job
         for jid, job in crawl_jobs.items():
-            if job.get("status") == "completed":
+            if job.get("status") == "completed" and job.get("source_id") == source["id"]:
                 job_id = jid
                 break
     
     if not job_id:
-        raise HTTPException(status_code=400, detail="No crawl job found. Please run the crawler first.")
+        raise HTTPException(status_code=400, detail="No crawl job found. Please crawl the source first.")
     
-    deployment = DeploymentHistory(
-        profile_id=profile_id,
-        profile_name=profile["name"],
-        status="running"
+    history = DeploymentHistory(
+        deployment_config_id=config_id,
+        deployment_name=config["name"],
+        source_name=source["name"],
+        destination_name=destination["name"],
+        status="deploying"
     )
     
-    await db.deployment_history.insert_one(deployment.model_dump())
+    await db.deployment_history.insert_one(history.model_dump())
     
-    if profile["external_protocol"] == "sftp":
-        background_tasks.add_task(deploy_via_sftp, deployment.id, profile, job_id)
+    await db.deployment_configs.update_one(
+        {"id": config_id},
+        {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}
+    )
+    
+    if destination["protocol"] == "sftp":
+        background_tasks.add_task(deploy_via_sftp, history.id, destination, job_id)
     else:
-        background_tasks.add_task(deploy_via_ftp, deployment.id, profile, job_id)
+        background_tasks.add_task(deploy_via_ftp, history.id, destination, job_id)
     
-    return {"deployment_id": deployment.id, "status": "started"}
+    return {"deployment_id": history.id, "status": "started"}
 
 @api_router.get("/deploy/logs/{deployment_id}")
 async def get_deployment_logs(deployment_id: str):
@@ -652,22 +770,19 @@ async def get_deployment_logs(deployment_id: str):
         raise HTTPException(status_code=404, detail="Deployment not found")
     return deployment
 
-# ============ HISTORY ENDPOINTS ============
+# ============ HISTORY ============
 
 @api_router.get("/history", response_model=List[DeploymentHistory])
 async def get_deployment_history(limit: int = 50):
     history = await db.deployment_history.find({}, {"_id": 0}).sort("started_at", -1).to_list(limit)
     return history
 
-@api_router.get("/history/{profile_id}", response_model=List[DeploymentHistory])
-async def get_profile_history(profile_id: str, limit: int = 20):
-    history = await db.deployment_history.find(
-        {"profile_id": profile_id}, 
-        {"_id": 0}
-    ).sort("started_at", -1).to_list(limit)
+@api_router.get("/history/config/{config_id}", response_model=List[DeploymentHistory])
+async def get_config_history(config_id: str, limit: int = 20):
+    history = await db.deployment_history.find({"deployment_config_id": config_id}, {"_id": 0}).sort("started_at", -1).to_list(limit)
     return history
 
-# ============ SCHEDULED DEPLOYMENTS ENDPOINTS ============
+# ============ SCHEDULES ============
 
 @api_router.get("/schedules", response_model=List[ScheduledDeployment])
 async def get_schedules():
@@ -676,13 +791,13 @@ async def get_schedules():
 
 @api_router.post("/schedules", response_model=ScheduledDeployment)
 async def create_schedule(schedule_data: ScheduledDeploymentCreate):
-    profile = await db.site_profiles.find_one({"id": schedule_data.profile_id}, {"_id": 0})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    config = await db.deployment_configs.find_one({"id": schedule_data.deployment_config_id}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
     
     schedule = ScheduledDeployment(
-        profile_id=schedule_data.profile_id,
-        profile_name=profile["name"],
+        deployment_config_id=schedule_data.deployment_config_id,
+        deployment_name=config["name"],
         cron_expression=schedule_data.cron_expression,
         enabled=schedule_data.enabled
     )
@@ -692,10 +807,7 @@ async def create_schedule(schedule_data: ScheduledDeploymentCreate):
 
 @api_router.put("/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, enabled: bool):
-    result = await db.scheduled_deployments.update_one(
-        {"id": schedule_id},
-        {"$set": {"enabled": enabled}}
-    )
+    result = await db.scheduled_deployments.update_one({"id": schedule_id}, {"$set": {"enabled": enabled}})
     if result.modified_count == 0:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"message": "Schedule updated"}
@@ -707,40 +819,41 @@ async def delete_schedule(schedule_id: str):
         raise HTTPException(status_code=404, detail="Schedule not found")
     return {"message": "Schedule deleted"}
 
-# ============ COMPARISON ENDPOINTS ============
+# ============ COMPARISON ============
 
 @api_router.post("/compare/content")
 async def compare_content(request: CompareRequest):
     import requests
-    from bs4 import BeautifulSoup
     import difflib
     
-    profile = await db.site_profiles.find_one({"id": request.profile_id}, {"_id": 0})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+    config = await db.deployment_configs.find_one({"id": request.deployment_config_id}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
     
-    internal_url = f"{profile['wordpress_url'].rstrip('/')}{request.page_path}"
-    external_url = f"{profile['external_url'].rstrip('/')}{request.page_path}" if profile.get('external_url') else None
+    source = await db.sources.find_one({"id": config["source_id"]}, {"_id": 0})
+    destination = await db.destinations.find_one({"id": config["destination_id"]}, {"_id": 0})
+    
+    source_url = f"{source['url'].rstrip('/')}{request.page_path}"
+    dest_url = f"{destination['public_url'].rstrip('/')}{request.page_path}" if destination.get('public_url') else None
     
     try:
-        internal_response = requests.get(internal_url, timeout=30)
-        internal_content = internal_response.text if internal_response.status_code == 200 else ""
+        source_response = requests.get(source_url, timeout=30)
+        source_content = source_response.text if source_response.status_code == 200 else ""
     except Exception:
-        internal_content = ""
+        source_content = ""
     
-    external_content = ""
-    if external_url:
+    dest_content = ""
+    if dest_url:
         try:
-            external_response = requests.get(external_url, timeout=30)
-            external_content = external_response.text if external_response.status_code == 200 else ""
+            dest_response = requests.get(dest_url, timeout=30)
+            dest_content = dest_response.text if dest_response.status_code == 200 else ""
         except Exception:
             pass
     
-    # Calculate differences
-    internal_lines = internal_content.splitlines(keepends=True)
-    external_lines = external_content.splitlines(keepends=True)
+    source_lines = source_content.splitlines(keepends=True)
+    dest_lines = dest_content.splitlines(keepends=True)
     
-    differ = difflib.unified_diff(internal_lines, external_lines, lineterm='')
+    differ = difflib.unified_diff(source_lines, dest_lines, lineterm='')
     diff_list = list(differ)
     
     differences = []
@@ -751,75 +864,67 @@ async def compare_content(request: CompareRequest):
             differences.append({"type": "removed", "content": line[1:]})
     
     return CompareResult(
-        internal_content=internal_content,
-        external_content=external_content,
+        source_content=source_content,
+        destination_content=dest_content,
         differences=differences,
         has_differences=len(differences) > 0
     )
 
 @api_router.post("/compare/files")
 async def compare_files(request: CompareRequest):
-    import requests
-    from bs4 import BeautifulSoup
+    config = await db.deployment_configs.find_one({"id": request.deployment_config_id}, {"_id": 0})
+    if not config:
+        raise HTTPException(status_code=404, detail="Deployment config not found")
     
-    profile = await db.site_profiles.find_one({"id": request.profile_id}, {"_id": 0})
-    if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
-    
-    # This would typically scan both sites for files
-    # For now, we'll compare based on crawled data
-    internal_files = []
-    external_files = []
-    
-    # Find latest crawl for this profile
+    source_files = []
     for job_id, job in crawl_jobs.items():
-        if job.get("status") == "completed":
-            internal_files = job.get("files", [])
+        if job.get("status") == "completed" and job.get("source_id") == config["source_id"]:
+            source_files = job.get("files", [])
             break
     
-    # Calculate differences
-    internal_set = set(internal_files)
-    external_set = set(external_files)
+    dest_files = []
     
-    added = list(internal_set - external_set)
-    removed = list(external_set - internal_set)
-    modified = []  # Would need to compare file hashes
+    source_set = set(source_files)
+    dest_set = set(dest_files)
     
     return FileCompareResult(
-        internal_files=internal_files,
-        external_files=external_files,
-        added=added,
-        removed=removed,
-        modified=modified
+        source_files=source_files,
+        destination_files=dest_files,
+        added=list(source_set - dest_set),
+        removed=list(dest_set - source_set),
+        modified=[]
     )
 
-# ============ STATS ENDPOINT ============
+# ============ STATS ============
 
 @api_router.get("/stats")
 async def get_stats():
-    total_sites = await db.site_profiles.count_documents({})
-    total_deployments = await db.deployment_history.count_documents({})
-    successful_deployments = await db.deployment_history.count_documents({"status": "success"})
-    failed_deployments = await db.deployment_history.count_documents({"status": "failed"})
+    total_sources = await db.sources.count_documents({})
+    total_destinations = await db.destinations.count_documents({})
+    total_deployments = await db.deployment_configs.count_documents({})
+    total_runs = await db.deployment_history.count_documents({})
+    successful_runs = await db.deployment_history.count_documents({"status": "success"})
+    failed_runs = await db.deployment_history.count_documents({"status": "failed"})
     scheduled_count = await db.scheduled_deployments.count_documents({"enabled": True})
     
-    # Get recent activity
     recent = await db.deployment_history.find({}, {"_id": 0}).sort("started_at", -1).to_list(5)
     
     return {
-        "total_sites": total_sites,
+        "total_sources": total_sources,
+        "total_destinations": total_destinations,
         "total_deployments": total_deployments,
-        "successful_deployments": successful_deployments,
-        "failed_deployments": failed_deployments,
+        "total_runs": total_runs,
+        "successful_runs": successful_runs,
+        "failed_runs": failed_runs,
         "active_schedules": scheduled_count,
         "recent_activity": recent
     }
 
-# ============ ROOT ENDPOINT ============
+# ============ ROOT ============
 
 @api_router.get("/")
 async def root():
-    return {"message": "WordPress to Static Deployer API"}
+    return {"message": "Staticify API - WordPress to Static Deployer"}
 
 # Include router
 app.include_router(api_router)
