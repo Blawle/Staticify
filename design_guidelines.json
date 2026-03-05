@@ -1,0 +1,213 @@
+{
+  "project_name": "WordPress to Static Deployer",
+  "theme_strategy": {
+    "name": "Tactical Minimalism (Dark Mode)",
+    "mode": "dark",
+    "emotional_archetype": "The Performance Pro",
+    "description": "A high-precision, low-latency interface designed for developers and admins. Prioritizes information density, clarity, and system status visibility over decoration.",
+    "appearance": {
+      "base": "Deep Obsidian (#09090b)",
+      "surface": "Zinc 900 (#18181b)",
+      "highlight": "Electric Indigo (#6366f1)"
+    }
+  },
+  "typography": {
+    "headings": {
+      "family": "Chivo, sans-serif",
+      "usage": "Use for all section headers and page titles.",
+      "weights": "900 (Black) or 700 (Bold)",
+      "tracking": "tight (-0.02em)"
+    },
+    "body": {
+      "family": "Manrope, sans-serif",
+      "usage": "Use for standard UI text, labels, and descriptions.",
+      "weights": "400 (Regular), 500 (Medium)"
+    },
+    "code": {
+      "family": "JetBrains Mono, monospace",
+      "usage": "Use for logs, file paths, diff views, and configuration values.",
+      "weights": "400 (Regular)"
+    },
+    "scale": {
+      "h1": "text-4xl md:text-5xl font-black tracking-tighter",
+      "h2": "text-3xl font-bold tracking-tight",
+      "h3": "text-2xl font-bold tracking-tight",
+      "body-lg": "text-lg font-medium",
+      "body-base": "text-base font-normal",
+      "body-sm": "text-sm font-medium text-muted-foreground",
+      "caption": "text-xs font-mono uppercase tracking-widest text-muted-foreground"
+    }
+  },
+  "colors": {
+    "palette": {
+      "background": "#09090b",
+      "foreground": "#fafafa",
+      "card": "#18181b",
+      "card-foreground": "#fafafa",
+      "popover": "#18181b",
+      "popover-foreground": "#fafafa",
+      "primary": "#6366f1",
+      "primary-foreground": "#ffffff",
+      "secondary": "#27272a",
+      "secondary-foreground": "#fafafa",
+      "muted": "#27272a",
+      "muted-foreground": "#a1a1aa",
+      "accent": "#27272a",
+      "accent-foreground": "#fafafa",
+      "destructive": "#ef4444",
+      "destructive-foreground": "#ffffff",
+      "border": "#27272a",
+      "input": "#27272a",
+      "ring": "#6366f1",
+      "success": "#10b981",
+      "warning": "#f59e0b",
+      "info": "#3b82f6"
+    },
+    "usage_rules": {
+      "primary": "Use ONLY for the main 'Deploy' or 'Save' action on a page. Never use for secondary buttons.",
+      "destructive": "Use for 'Stop Deployment', 'Delete Profile', or critical errors.",
+      "success": "Use for 'Deployment Successful' badges and text.",
+      "warning": "Use for 'Diff Found' or 'Configuration Missing' states.",
+      "borders": "Use subtle 1px borders (#27272a) to define areas. Avoid heavy drop shadows."
+    }
+  },
+  "layout_strategy": {
+    "container": {
+      "default": "max-w-7xl mx-auto p-6 md:p-8 lg:p-12",
+      "dashboard": "grid grid-cols-1 md:grid-cols-12 gap-6",
+      "full_width": "w-full h-full p-0"
+    },
+    "spacing": {
+      "section_gap": "gap-8 md:gap-12",
+      "card_padding": "p-6",
+      "internal_padding": "p-4"
+    },
+    "grid_modes": {
+      "dashboard_bento": {
+        "wrapper": "grid grid-cols-1 md:grid-cols-4 lg:grid-cols-4 gap-6",
+        "stat_card": "col-span-1",
+        "main_chart": "col-span-2 md:col-span-2 lg:col-span-2 row-span-2",
+        "list_panel": "col-span-1 md:col-span-2 lg:col-span-2 row-span-2"
+      },
+      "settings_form": {
+        "wrapper": "grid grid-cols-1 md:grid-cols-3 gap-8",
+        "sidebar": "col-span-1",
+        "content": "col-span-2"
+      }
+    }
+  },
+  "components": {
+    "buttons": {
+      "style": "h-10 px-4 py-2 rounded-md font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50",
+      "primary": "bg-primary text-primary-foreground hover:bg-primary/90 shadow-[0_0_10px_rgba(99,102,241,0.3)]",
+      "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+      "ghost": "hover:bg-accent hover:text-accent-foreground",
+      "destructive": "bg-destructive text-destructive-foreground hover:bg-destructive/90"
+    },
+    "cards": {
+      "style": "rounded-lg border bg-card text-card-foreground shadow-sm hover:border-primary/50 transition-colors duration-300",
+      "header": "flex flex-col space-y-1.5 p-6",
+      "content": "p-6 pt-0"
+    },
+    "inputs": {
+      "style": "flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background file:border-0 file:bg-transparent file:text-sm file:font-medium placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+    },
+    "status_badges": {
+      "success": "inline-flex items-center rounded-full border border-transparent bg-success/10 px-2.5 py-0.5 text-xs font-semibold text-success transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+      "warning": "inline-flex items-center rounded-full border border-transparent bg-warning/10 px-2.5 py-0.5 text-xs font-semibold text-warning transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+      "error": "inline-flex items-center rounded-full border border-transparent bg-destructive/10 px-2.5 py-0.5 text-xs font-semibold text-destructive transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+      "neutral": "inline-flex items-center rounded-full border border-transparent bg-secondary px-2.5 py-0.5 text-xs font-semibold text-secondary-foreground transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+    }
+  },
+  "visual_enhancers": {
+    "borders": {
+      "technical": "border border-border relative overflow-hidden",
+      "active": "border-primary/50 shadow-[0_0_15px_rgba(99,102,241,0.15)]"
+    },
+    "textures": {
+      "grid_bg": "bg-[linear-gradient(to_right,#80808012_1px,transparent_1px),linear-gradient(to_bottom,#80808012_1px,transparent_1px)] bg-[size:24px_24px]",
+      "noise": "before:fixed before:inset-0 before:z-[-1] before:bg-[url('https://grainy-gradients.vercel.app/noise.svg')] before:opacity-[0.03]"
+    },
+    "motion": {
+      "hover_lift": "hover:-translate-y-1 transition-transform duration-200",
+      "pulse_active": "animate-pulse"
+    }
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "stroke-[1.5px] w-5 h-5",
+    "usage": {
+      "dashboard": "LayoutDashboard",
+      "deploy": "Rocket",
+      "settings": "Settings",
+      "history": "History",
+      "logs": "ScrollText",
+      "diff": "FileDiff",
+      "site": "Globe",
+      "wordpress": "FileCode",
+      "ftp": "Server",
+      "sftp": "ShieldCheck",
+      "success": "CheckCircle2",
+      "failed": "XCircle",
+      "warning": "AlertTriangle",
+      "refresh": "RefreshCw",
+      "delete": "Trash2",
+      "edit": "Pencil"
+    }
+  },
+  "image_urls": {
+    "hero": [],
+    "placeholders": {
+      "empty_state_deploy": "https://images.unsplash.com/photo-1702478475268-aa8ef54c084e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDR8MHwxfHNlYXJjaHwxfHxzZXJ2ZXIlMjByYWNrc3xlbnwwfHx8fDE3NzI3MzMxNTd8MA&ixlib=rb-4.1.0&q=85",
+      "empty_state_sites": "https://images.unsplash.com/photo-1515879218367-8466d910aaa4?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjA3MDR8MHwxfHNlYXJjaHwxfHxjb2RpbmclMjBzY3JlZW58ZW58MHx8fHwxNzcyNzMzMTU4fDA&ixlib=rb-4.1.0&q=85"
+    }
+  },
+  "instructions_to_main_agent": {
+    "general": [
+      "Use 'sonner' for all toast notifications (success, error, info).",
+      "Implement the 'Technical Grid' background on the main layout wrapper to give it a developer-tool feel.",
+      "For the 'Diff Viewer', use 'react-resizable-panels' to allow users to adjust the split view.",
+      "Ensure all timestamps are formatted using 'date-fns' in a readable format (e.g., 'PPpp').",
+      "Use 'lucide-react' icons for all UI iconography.",
+      "For empty states (no sites, no deployments), use the provided placeholder images with a subtle opacity (0.5) and a clear CTA button.",
+      "Files are .js, so do not use TypeScript syntax in the code."
+    ],
+    "dashboard_page": [
+      "Use the 'Bento Grid' layout.",
+      "Top row: Summary Stats (Total Sites, Last Deploy Status, Total Deploys).",
+      "Main area: 'Active Sites' grid. Each card shows the site name, WP URL, External URL, and last deploy status badge.",
+      "Sidebar/Bottom: Recent Activity Log (dense list)."
+    ],
+    "deployment_page": [
+      "Split view: Configuration on top (or left), Real-time Logs on bottom (or right).",
+      "The Log view should look like a terminal: Black background, Monospace font (JetBrains Mono), Green/White text.",
+      "Include a big, prominent 'Deploy' button using the Primary color."
+    ],
+    "diff_page": [
+      "Full-screen width.",
+      "Two panes side-by-side.",
+      "Left: 'Internal (WordPress)', Right: 'External (Static)'.",
+      "Highlight differences with a red (removed) / green (added) background tint in the code view.",
+      "If comparing visual preview, use an iframe for both with a 'Sync Scroll' toggle."
+    ]
+  },
+  "universal_guidelines": [
+    "You tend to converge toward generic, 'on distribution' outputs. In frontend design, this creates what users call the 'AI slop' aesthetic. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy",
+    "Use glass-morphism effects with backdrop filters (12-24px blur)",
+    "You MUST NOT apply universal transition. Eg: 'transition: all'. This results in breaking transforms. Always add transitions for specific interactive elements like button, input excluding transforms",
+    "You MUST NOT center align the app container, ie do not add '.App { text-align: center; }' in the css file. This disrupts the human natural reading flow of text",
+    "Always use modern button styles like pill-shaped, or sharp button with interaction animations & color relevant to the app style",
+    "NEVER: use AI assistant Emoji characters like 🤖🧠 etc for icons.",
+    "Every interaction needs micro-animations - hover states, transitions. Static = dead.",
+    "Use 2-3x more spacing than feels comfortable. Cramped designs look cheap.",
+    "Subtle grain textures, noise overlays, custom cursors, selection states, and loading animations: separates good from extraordinary.",
+    "Main agent relies on these image URLs. Missing categories = main agent will use placeholder text which is FORBIDDEN",
+    "Prioritize using pre-existing components from src/components/ui when applicable",
+    "Components MUST use named exports (export const ComponentName = ...)",
+    "Pages MUST use default exports (export default function PageName() {...})",
+    "Use 'sonner' for toasts located in '/app/frontend/src/components/ui/sonner.jsx' (check extension)"
+  ]
+}
