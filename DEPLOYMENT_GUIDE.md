@@ -1,8 +1,17 @@
-# WordPress to Static Deployer - Deployment Guide
+# Staticify - Deployment Guide
+
+**Repository:** https://github.com/Blawle/Staticify
 
 ## Overview
 
-This guide covers deploying the WordPress to Static Deployer tool to a self-contained LXC container on a Proxmox host. The deployment includes:
+This guide covers deploying Staticify (WordPress to Static Deployer) to a **lightweight LXC container** on Proxmox. LXC containers are preferred over full VMs because they:
+
+- Use significantly less resources (RAM, CPU, storage)
+- Start in seconds rather than minutes
+- Provide near-native performance
+- Are easier to backup and migrate
+
+### Deployment Stack
 
 - **Frontend**: React application (served via Nginx)
 - **Backend**: FastAPI Python application (via Uvicorn + systemd)
@@ -11,11 +20,11 @@ This guide covers deploying the WordPress to Static Deployer tool to a self-cont
 
 ## System Requirements
 
-### Minimum Requirements
+### LXC Container Requirements
 - **CPU**: 2 cores
-- **RAM**: 2GB (4GB recommended)
+- **RAM**: 2GB (4GB recommended for large sites)
 - **Storage**: 20GB
-- **OS**: Ubuntu 22.04 LTS or Debian 12
+- **Template**: Ubuntu 22.04 LTS or Debian 12
 
 ### Network Requirements
 - Port 80 (HTTP)
@@ -23,155 +32,174 @@ This guide covers deploying the WordPress to Static Deployer tool to a self-cont
 - Outbound access to WordPress sites for crawling
 - Outbound FTP/SFTP access (ports 21, 22)
 
+---
+
 ## Quick Deploy (Proxmox LXC)
 
-### Option 1: Automated Script
+### One-Line Installation
 
-Run this on your Proxmox host:
+Run this on your **Proxmox host** (not inside a container):
 
 ```bash
-# Download and run the deployment script
-wget https://your-server.com/deploy-wp-static.sh
-chmod +x deploy-wp-static.sh
-./deploy-wp-static.sh
+wget -qO- https://raw.githubusercontent.com/Blawle/Staticify/main/scripts/deploy-proxmox-lxc.sh | bash
 ```
 
-Or copy the script from `/app/scripts/deploy-proxmox-lxc.sh`
+### Or with custom options:
 
-### Option 2: Manual Installation
+```bash
+wget https://raw.githubusercontent.com/Blawle/Staticify/main/scripts/deploy-proxmox-lxc.sh
+chmod +x deploy-proxmox-lxc.sh
 
-See the detailed steps below.
+# Basic deployment
+./deploy-proxmox-lxc.sh
+
+# With custom settings
+./deploy-proxmox-lxc.sh \
+  --ctid 200 \
+  --hostname staticify \
+  --memory 4096 \
+  --cores 4 \
+  --ip 192.168.1.100/24 \
+  --gateway 192.168.1.1 \
+  --domain staticify.example.com
+```
+
+### Script Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--ctid <id>` | Container ID | Auto-detect |
+| `--hostname <name>` | Container hostname | `staticify` |
+| `--memory <mb>` | RAM in MB | `2048` |
+| `--cores <n>` | CPU cores | `2` |
+| `--storage <name>` | Storage pool | `local-lvm` |
+| `--disk <gb>` | Disk size in GB | `20` |
+| `--bridge <name>` | Network bridge | `vmbr0` |
+| `--ip <address>` | Static IP (CIDR) | `dhcp` |
+| `--gateway <address>` | Gateway IP | (required if static) |
+| `--domain <domain>` | Domain for SSL | (optional) |
+| `--encryption-key <key>` | Custom encryption key | Auto-generate |
 
 ---
 
-## Manual Installation Steps
+## Manual Installation
 
-### 1. Create LXC Container (Proxmox)
+### Step 1: Create LXC Container
+
+On your Proxmox host:
 
 ```bash
-# On Proxmox host
+# Download Ubuntu 22.04 template
+pveam update
+pveam download local ubuntu-22.04-standard_22.04-1_amd64.tar.zst
+
+# Create LXC container (NOT a VM)
 pct create 200 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
-  --hostname wp-static-deployer \
+  --hostname staticify \
   --memory 2048 \
   --swap 512 \
   --cores 2 \
   --rootfs local-lvm:20 \
   --net0 name=eth0,bridge=vmbr0,ip=dhcp \
   --unprivileged 1 \
-  --features nesting=1
+  --features nesting=1 \
+  --onboot 1
 
+# Start and enter container
 pct start 200
 pct enter 200
 ```
 
-### 2. System Setup
+### Step 2: Install Dependencies
+
+Inside the LXC container:
 
 ```bash
 # Update system
 apt update && apt upgrade -y
 
-# Install dependencies
-apt install -y \
-  curl \
-  wget \
-  git \
-  nginx \
-  python3 \
-  python3-pip \
-  python3-venv \
-  nodejs \
-  npm \
-  gnupg
+# Install base packages
+apt install -y curl wget git nginx python3 python3-pip python3-venv gnupg ca-certificates
 
-# Install MongoDB
+# Install Node.js 20
+curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+apt install -y nodejs
+npm install -g yarn
+
+# Install MongoDB 7.0
 curl -fsSL https://pgp.mongodb.com/server-7.0.asc | \
   gpg -o /usr/share/keyrings/mongodb-server-7.0.gpg --dearmor
 echo "deb [ signed-by=/usr/share/keyrings/mongodb-server-7.0.gpg ] https://repo.mongodb.org/apt/ubuntu jammy/mongodb-org/7.0 multiverse" | \
   tee /etc/apt/sources.list.d/mongodb-org-7.0.list
-apt update
-apt install -y mongodb-org
-systemctl enable mongod
-systemctl start mongod
-
-# Install Yarn
-npm install -g yarn
+apt update && apt install -y mongodb-org
+systemctl enable mongod && systemctl start mongod
 ```
 
-### 3. Create Application User
+### Step 3: Clone Repository
 
 ```bash
-useradd -m -s /bin/bash wpstatic
-mkdir -p /opt/wp-static-deployer
-chown wpstatic:wpstatic /opt/wp-static-deployer
+# Create application user
+useradd -m -s /bin/bash staticify
+
+# Clone from GitHub
+cd /opt
+git clone https://github.com/Blawle/Staticify.git staticify
+chown -R staticify:staticify /opt/staticify
 ```
 
-### 4. Deploy Backend
+### Step 4: Setup Backend
 
 ```bash
-# As wpstatic user
-su - wpstatic
-cd /opt/wp-static-deployer
-
-# Create backend directory
-mkdir -p backend
-cd backend
+cd /opt/staticify/backend
 
 # Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+sudo -u staticify python3 -m venv venv
+sudo -u staticify bash -c "source venv/bin/activate && pip install --upgrade pip"
+sudo -u staticify bash -c "source venv/bin/activate && pip install -r requirements.txt"
 
-# Install dependencies
-pip install fastapi uvicorn motor pymongo python-dotenv \
-  pydantic beautifulsoup4 lxml paramiko apscheduler \
-  aiofiles cryptography requests
-
-# Copy server.py (from your build)
-# ... copy the server.py file here ...
-
-# Create .env file
+# Create environment file
 cat > .env << 'EOF'
 MONGO_URL=mongodb://localhost:27017
-DB_NAME=wp_static_deployer
+DB_NAME=staticify
 CORS_ORIGINS=*
-ENCRYPTION_KEY=your-secure-encryption-key-change-this
+ENCRYPTION_KEY=CHANGE-THIS-TO-A-SECURE-KEY
 EOF
 
 chmod 600 .env
+chown staticify:staticify .env
+
+# Generate secure encryption key
+SECURE_KEY=$(openssl rand -base64 32 | tr -d '/+=' | head -c 32)
+sed -i "s/CHANGE-THIS-TO-A-SECURE-KEY/$SECURE_KEY/" .env
+echo "Encryption key: $SECURE_KEY"
 ```
 
-### 5. Deploy Frontend
+### Step 5: Build Frontend
 
 ```bash
-cd /opt/wp-static-deployer
-mkdir -p frontend
+cd /opt/staticify/frontend
 
-# Copy built React files or build from source
-# Option A: Copy pre-built files
-# cp -r /path/to/build/* frontend/
-
-# Option B: Build from source
-cd frontend
-# Copy package.json, src/, public/ directories
-yarn install
-yarn build
+# Install dependencies and build
+sudo -u staticify yarn install
+sudo -u staticify bash -c "echo 'REACT_APP_BACKEND_URL=' > .env.production"
+sudo -u staticify yarn build
 ```
 
-### 6. Configure Systemd Service
+### Step 6: Configure Systemd Service
 
 ```bash
-# As root
-cat > /etc/systemd/system/wp-static-backend.service << 'EOF'
+cat > /etc/systemd/system/staticify.service << 'EOF'
 [Unit]
-Description=WP Static Deployer Backend
+Description=Staticify Backend
 After=network.target mongod.service
 
 [Service]
 Type=simple
-User=wpstatic
-Group=wpstatic
-WorkingDirectory=/opt/wp-static-deployer/backend
-Environment="PATH=/opt/wp-static-deployer/backend/venv/bin"
-ExecStart=/opt/wp-static-deployer/backend/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001
+User=staticify
+Group=staticify
+WorkingDirectory=/opt/staticify/backend
+Environment="PATH=/opt/staticify/backend/venv/bin"
+ExecStart=/opt/staticify/backend/venv/bin/uvicorn server:app --host 127.0.0.1 --port 8001
 Restart=always
 RestartSec=5
 
@@ -180,20 +208,19 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable wp-static-backend
-systemctl start wp-static-backend
+systemctl enable staticify
+systemctl start staticify
 ```
 
-### 7. Configure Nginx
+### Step 7: Configure Nginx
 
 ```bash
-cat > /etc/nginx/sites-available/wp-static-deployer << 'EOF'
+cat > /etc/nginx/sites-available/staticify << 'EOF'
 server {
     listen 80;
     server_name _;
     
-    # Frontend
-    root /opt/wp-static-deployer/frontend/build;
+    root /opt/staticify/frontend/build;
     index index.html;
     
     # API proxy
@@ -206,12 +233,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_cache_bypass $http_upgrade;
         proxy_read_timeout 300s;
         proxy_connect_timeout 75s;
     }
     
-    # Frontend routing
+    # Frontend routing (SPA)
     location / {
         try_files $uri $uri/ /index.html;
     }
@@ -220,137 +246,143 @@ server {
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
+    
+    # Gzip
+    gzip on;
+    gzip_types text/plain text/css application/json application/javascript text/xml;
 }
 EOF
 
-ln -sf /etc/nginx/sites-available/wp-static-deployer /etc/nginx/sites-enabled/
+ln -sf /etc/nginx/sites-available/staticify /etc/nginx/sites-enabled/
 rm -f /etc/nginx/sites-enabled/default
 nginx -t && systemctl reload nginx
 ```
 
-### 8. Configure Firewall (Optional)
+### Step 8: Configure Firewall
 
 ```bash
 apt install -y ufw
+ufw default deny incoming
+ufw default allow outgoing
 ufw allow 22/tcp
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw enable
+ufw --force enable
 ```
 
 ---
 
-## Configuration
+## SSL/TLS Configuration
 
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `MONGO_URL` | MongoDB connection string | `mongodb://localhost:27017` |
-| `DB_NAME` | Database name | `wp_static_deployer` |
-| `CORS_ORIGINS` | Allowed CORS origins | `*` |
-| `ENCRYPTION_KEY` | Key for password encryption | (required, change default!) |
-
-### Changing the Encryption Key
-
-**Important**: Change the default encryption key before production use!
-
-```bash
-# Generate a secure key
-python3 -c "import secrets; print(secrets.token_urlsafe(32))"
-
-# Update .env file
-nano /opt/wp-static-deployer/backend/.env
-# Set ENCRYPTION_KEY=<your-generated-key>
-
-# Restart backend
-systemctl restart wp-static-backend
-```
-
----
-
-## SSL/TLS Setup (Recommended)
-
-### Using Let's Encrypt
+### Using Let's Encrypt (Recommended)
 
 ```bash
 apt install -y certbot python3-certbot-nginx
 
-# Get certificate (replace with your domain)
+# Replace with your domain
 certbot --nginx -d your-domain.com
 
-# Auto-renewal is configured automatically
+# Verify auto-renewal
+certbot renew --dry-run
 ```
 
 ---
 
-## Maintenance
+## Post-Installation
 
-### View Logs
+### Verify Installation
 
 ```bash
-# Backend logs
-journalctl -u wp-static-backend -f
+# Check services
+systemctl status staticify
+systemctl status mongod
+systemctl status nginx
 
-# Nginx logs
-tail -f /var/log/nginx/access.log
-tail -f /var/log/nginx/error.log
+# Test API
+curl http://localhost:8001/api/
 
-# MongoDB logs
-tail -f /var/log/mongodb/mongod.log
+# Get container IP
+hostname -I
 ```
 
-### Backup Database
+### Access the Application
+
+Open your browser and navigate to:
+- **HTTP**: `http://<container-ip>`
+- **HTTPS**: `https://your-domain.com` (if SSL configured)
+
+---
+
+## Updating
 
 ```bash
-# Backup
-mongodump --db wp_static_deployer --out /backup/mongodb/$(date +%Y%m%d)
+cd /opt/staticify
 
-# Restore
-mongorestore --db wp_static_deployer /backup/mongodb/20260115/wp_static_deployer
-```
-
-### Update Application
-
-```bash
-# Stop services
-systemctl stop wp-static-backend
+# Pull latest changes
+git pull origin main
 
 # Update backend
-cd /opt/wp-static-deployer/backend
+cd backend
 source venv/bin/activate
-pip install --upgrade -r requirements.txt
+pip install -r requirements.txt
 
-# Update frontend (if rebuilding)
-cd /opt/wp-static-deployer/frontend
+# Rebuild frontend
+cd ../frontend
 yarn install
 yarn build
 
-# Restart services
-systemctl start wp-static-backend
+# Restart service
+systemctl restart staticify
+```
+
+---
+
+## Backup & Restore
+
+### Backup
+
+```bash
+# Backup database
+mongodump --db staticify --out /backup/$(date +%Y%m%d)
+
+# Backup configuration
+cp /opt/staticify/backend/.env /backup/
+```
+
+### Restore
+
+```bash
+# Restore database
+mongorestore --db staticify /backup/20260115/staticify
+
+# Restore configuration
+cp /backup/.env /opt/staticify/backend/
+systemctl restart staticify
 ```
 
 ---
 
 ## Troubleshooting
 
-### Backend won't start
+### Service Won't Start
+
+```bash
+# Check logs
+journalctl -u staticify -f
+
+# Test manually
+cd /opt/staticify/backend
+source venv/bin/activate
+python -c "from server import app; print('OK')"
+uvicorn server:app --host 127.0.0.1 --port 8001
+```
+
+### MongoDB Issues
 
 ```bash
 # Check status
-systemctl status wp-static-backend
-
-# Test manually
-cd /opt/wp-static-deployer/backend
-source venv/bin/activate
-python -c "from server import app; print('OK')"
-```
-
-### MongoDB connection issues
-
-```bash
-# Check MongoDB status
 systemctl status mongod
+journalctl -u mongod -f
 
 # Test connection
 mongosh --eval "db.adminCommand('ping')"
@@ -362,23 +394,27 @@ mongosh --eval "db.adminCommand('ping')"
 # Check if backend is running
 curl http://127.0.0.1:8001/api/
 
-# Check Nginx config
+# Verify Nginx config
 nginx -t
+
+# Check Nginx logs
+tail -f /var/log/nginx/error.log
 ```
 
 ---
 
-## Security Recommendations
+## Security Checklist
 
-1. **Change default encryption key** - Critical for password security
-2. **Use HTTPS** - Set up SSL/TLS certificates
-3. **Restrict network access** - Use firewall rules
-4. **Regular updates** - Keep system and dependencies updated
-5. **Backup regularly** - Schedule automated database backups
-6. **Monitor logs** - Set up log monitoring/alerting
+- [ ] Changed default encryption key
+- [ ] Configured SSL/TLS certificate
+- [ ] Enabled firewall (UFW)
+- [ ] Set up automated backups
+- [ ] Configured fail2ban (optional)
+- [ ] Limited SSH access
 
 ---
 
 ## Support
 
-For issues and feature requests, please refer to the project repository.
+- **Repository**: https://github.com/Blawle/Staticify
+- **Issues**: https://github.com/Blawle/Staticify/issues

@@ -1,6 +1,8 @@
-# WordPress to Static Deployer
+# WordPress to Static Deployer (Staticify)
 
 A self-hostable tool for converting WordPress websites to static HTML and deploying via FTP/SFTP.
+
+**Repository:** https://github.com/Blawle/Staticify
 
 ## Features
 
@@ -14,20 +16,22 @@ A self-hostable tool for converting WordPress websites to static HTML and deploy
 
 ## Quick Start
 
-### Option 1: Proxmox LXC (Recommended)
+### Option 1: Proxmox LXC Container (Recommended)
+
+Deploy to a lightweight LXC container on Proxmox (not a full VM):
 
 ```bash
 # On your Proxmox host
-wget https://raw.githubusercontent.com/your-repo/wp-static-deployer/main/scripts/deploy-proxmox-lxc.sh
+wget https://raw.githubusercontent.com/Blawle/Staticify/main/scripts/deploy-proxmox-lxc.sh
 chmod +x deploy-proxmox-lxc.sh
-./deploy-proxmox-lxc.sh --hostname wp-static --memory 2048 --cores 2
+./deploy-proxmox-lxc.sh --hostname staticify --memory 2048 --cores 2
 ```
 
 ### Option 2: Standalone Installation
 
 ```bash
-# On any Ubuntu/Debian server
-wget https://raw.githubusercontent.com/your-repo/wp-static-deployer/main/scripts/install.sh
+# On any Ubuntu/Debian server or LXC container
+wget https://raw.githubusercontent.com/Blawle/Staticify/main/scripts/install.sh
 chmod +x install.sh
 sudo ./install.sh
 ```
@@ -42,6 +46,15 @@ docker-compose up -d
 
 - [Deployment Guide](DEPLOYMENT_GUIDE.md) - Full installation and configuration instructions
 - [API Reference](docs/API.md) - Backend API documentation
+
+## Why LXC over VM?
+
+This application is designed to run in a **lightweight LXC container** rather than a full virtual machine:
+
+- **Lower Resource Usage**: LXC containers share the host kernel, using ~50-80% less RAM than VMs
+- **Faster Startup**: Containers start in seconds vs minutes for VMs
+- **Better Performance**: Near-native performance with minimal overhead
+- **Easier Management**: Simple backup/restore and migration on Proxmox
 
 ## Directory Structure
 

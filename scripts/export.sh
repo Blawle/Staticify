@@ -1,16 +1,17 @@
 #!/bin/bash
 #
-# Export script - packages the application for deployment
+# Staticify - Export script for deployment
+# Repository: https://github.com/Blawle/Staticify
 #
 # Creates a tarball with all necessary files for deployment
 #
 
 set -e
 
-EXPORT_DIR="/tmp/wp-static-deployer-export"
-TARBALL="/tmp/wp-static-deployer.tar.gz"
+EXPORT_DIR="/tmp/staticify-export"
+TARBALL="/tmp/staticify.tar.gz"
 
-echo "Creating export package..."
+echo "Creating Staticify export package..."
 
 # Clean up
 rm -rf $EXPORT_DIR
@@ -57,11 +58,12 @@ fi
 cp /app/scripts/deploy-proxmox-lxc.sh $EXPORT_DIR/scripts/ 2>/dev/null || true
 cp /app/scripts/install.sh $EXPORT_DIR/scripts/ 2>/dev/null || true
 cp /app/DEPLOYMENT_GUIDE.md $EXPORT_DIR/ 2>/dev/null || true
+cp /app/README.md $EXPORT_DIR/ 2>/dev/null || true
 
 # Create sample .env
 cat > $EXPORT_DIR/backend/.env.example << 'EOF'
 MONGO_URL=mongodb://localhost:27017
-DB_NAME=wp_static_deployer
+DB_NAME=staticify
 CORS_ORIGINS=*
 ENCRYPTION_KEY=change-this-to-a-secure-random-key
 EOF
@@ -77,5 +79,7 @@ echo "Size: $(du -h $TARBALL | cut -f1)"
 echo ""
 echo "To deploy:"
 echo "1. Copy $TARBALL to your server"
-echo "2. Extract: tar -xzvf wp-static-deployer.tar.gz -C /opt/wp-static-deployer"
+echo "2. Extract: tar -xzvf staticify.tar.gz -C /opt/staticify"
 echo "3. Run: sudo bash scripts/install.sh"
+echo ""
+echo "Repository: https://github.com/Blawle/Staticify"
