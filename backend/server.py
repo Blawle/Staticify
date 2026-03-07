@@ -1,5 +1,4 @@
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
-from fastapi.responses import StreamingResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -12,12 +11,14 @@ import uuid
 from datetime import datetime, timezone
 import asyncio
 from urllib.parse import urljoin, urlparse
-import aiofiles
 import json
 import base64
+import re
 from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.interval import IntervalTrigger
 
 ROOT_DIR = Path(__file__).parent
 load_dotenv(ROOT_DIR / '.env')
@@ -165,13 +166,13 @@ class DeploymentHistory(DeploymentHistoryBase):
     started_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     completed_at: Optional[str] = None
 
-# Scheduled Deployment
+# Scheduled Deployment (interval-based)
 class ScheduledDeployment(BaseModel):
     model_config = ConfigDict(extra="ignore")
     id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     deployment_config_id: str
     deployment_name: str
-    cron_expression: str
+    interval_hours: int = 24
     enabled: bool = True
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
     last_run: Optional[str] = None
@@ -179,7 +180,7 @@ class ScheduledDeployment(BaseModel):
 
 class ScheduledDeploymentCreate(BaseModel):
     deployment_config_id: str
-    cron_expression: str
+    interval_hours: int = 24
     enabled: bool = True
 
 # Comparison
@@ -401,8 +402,162 @@ async def delete_deployment_config(config_id: str):
 
 # ============ CRAWLER ============
 
+def rewrite_links(html_content: str, base_url: str, page_url: str) -> str:
+    """Rewrite all internal links in HTML from absolute WordPress URLs to relative static paths."""
+    from bs4 import BeautifulSoup
+    
+    parsed_base = urlparse(base_url)
+    base_domain = parsed_base.netloc
+    soup = BeautifulSoup(html_content, "lxml")
+    
+    def make_relative(url_str: str, from_page: str) -> str:
+        """Convert an absolute URL to a relative path for static deployment."""
+        if not url_str:
+            return url_str
+        
+        parsed = urlparse(url_str)
+        
+        # Only rewrite URLs that point to the source WordPress domain
+        if parsed.netloc and parsed.netloc != base_domain:
+            return url_str
+        
+        # Get the path from the URL
+        if parsed.netloc == base_domain:
+            target_path = parsed.path
+        elif not parsed.scheme and not parsed.netloc:
+            # Already relative
+            return url_str
+        else:
+            return url_str
+        
+        # Clean up the target path
+        if not target_path or target_path == "/":
+            target_path = "/index.html"
+        elif target_path.endswith("/"):
+            target_path = target_path + "index.html"
+        elif "." not in target_path.split("/")[-1]:
+            target_path = target_path + "/index.html"
+        
+        # Build relative path from current page to target
+        from_parsed = urlparse(from_page)
+        from_path = from_parsed.path
+        if not from_path or from_path == "/":
+            from_dir = "/"
+        elif from_path.endswith("/"):
+            from_dir = from_path
+        else:
+            from_dir = "/".join(from_path.split("/")[:-1]) + "/"
+        
+        # Calculate relative path
+        from_parts = [p for p in from_dir.split("/") if p]
+        target_parts = target_path.lstrip("/").split("/")
+        
+        # Find common prefix
+        common = 0
+        for i in range(min(len(from_parts), len(target_parts) - 1)):
+            if from_parts[i] == target_parts[i]:
+                common += 1
+            else:
+                break
+        
+        ups = len(from_parts) - common
+        remaining = target_parts[common:]
+        
+        if ups == 0 and remaining:
+            relative = "./".join([""] + remaining) if not remaining[0].startswith(".") else "/".join(remaining)
+            relative = "/".join(remaining)
+        else:
+            relative = "/".join([".."] * ups + remaining)
+        
+        if not relative:
+            relative = "index.html"
+        
+        # Preserve query string and fragment
+        result = relative
+        if parsed.query:
+            result += "?" + parsed.query
+        if parsed.fragment:
+            result += "#" + parsed.fragment
+        
+        return result
+    
+    # Rewrite <a href>
+    for tag in soup.find_all("a", href=True):
+        href = tag["href"]
+        parsed_href = urlparse(href)
+        if parsed_href.netloc == base_domain or (not parsed_href.netloc and not parsed_href.scheme):
+            if parsed_href.netloc == base_domain:
+                tag["href"] = make_relative(href, page_url)
+    
+    # Rewrite <link href> (CSS, icons, etc)
+    for tag in soup.find_all("link", href=True):
+        href = tag["href"]
+        parsed_href = urlparse(href)
+        if parsed_href.netloc == base_domain:
+            tag["href"] = make_relative(href, page_url)
+    
+    # Rewrite <script src>
+    for tag in soup.find_all("script", src=True):
+        src = tag["src"]
+        parsed_src = urlparse(src)
+        if parsed_src.netloc == base_domain:
+            tag["src"] = make_relative(src, page_url)
+    
+    # Rewrite <img src> and <img srcset>
+    for tag in soup.find_all("img"):
+        if tag.get("src"):
+            parsed_src = urlparse(tag["src"])
+            if parsed_src.netloc == base_domain:
+                tag["src"] = make_relative(tag["src"], page_url)
+        if tag.get("srcset"):
+            new_srcset_parts = []
+            for part in tag["srcset"].split(","):
+                part = part.strip()
+                pieces = part.split()
+                if pieces:
+                    url_part = pieces[0]
+                    parsed_src = urlparse(url_part)
+                    if parsed_src.netloc == base_domain:
+                        pieces[0] = make_relative(url_part, page_url)
+                    new_srcset_parts.append(" ".join(pieces))
+            tag["srcset"] = ", ".join(new_srcset_parts)
+    
+    # Rewrite <form action>
+    for tag in soup.find_all("form", action=True):
+        action = tag["action"]
+        parsed_action = urlparse(action)
+        if parsed_action.netloc == base_domain:
+            tag["action"] = make_relative(action, page_url)
+    
+    # Rewrite <source src/srcset> in <picture>/<video>/<audio>
+    for tag in soup.find_all("source"):
+        for attr in ["src", "srcset"]:
+            if tag.get(attr):
+                parsed_src = urlparse(tag[attr])
+                if parsed_src.netloc == base_domain:
+                    tag[attr] = make_relative(tag[attr], page_url)
+    
+    return str(soup)
+
+
+def rewrite_css_urls(css_content: str, css_url: str, base_url: str) -> str:
+    """Rewrite url() references in CSS files to be relative."""
+    parsed_base = urlparse(base_url)
+    base_domain = parsed_base.netloc
+    
+    def replace_url(match):
+        url_value = match.group(1).strip("'\"")
+        parsed = urlparse(url_value)
+        if parsed.netloc == base_domain:
+            # Convert to relative from CSS file location
+            return f'url({parsed.path})'
+        return match.group(0)
+    
+    return re.sub(r'url\(([^)]+)\)', replace_url, css_content)
+
+
 async def crawl_website(job_id: str, source: dict):
-    """Background task to crawl a WordPress website"""
+    """Background task to crawl a WordPress website with link rewriting."""
     import requests
     from bs4 import BeautifulSoup
     from urllib.parse import urljoin, urlparse
@@ -417,9 +572,12 @@ async def crawl_website(job_id: str, source: dict):
     }
     
     base_url = source["url"].rstrip("/")
+    parsed_base = urlparse(base_url)
+    base_domain = parsed_base.netloc
     visited = set()
     to_visit = [base_url + source.get("root_path", "/")]
     files_saved = []
+    downloaded_assets = set()
     
     crawl_dir = Path(f"/tmp/crawl_{job_id}")
     crawl_dir.mkdir(parents=True, exist_ok=True)
@@ -451,46 +609,88 @@ async def crawl_website(job_id: str, source: dict):
                     
                     # Remove WordPress-specific elements
                     for script in soup.find_all("script"):
-                        if script.get("src") and ("wp-" in script.get("src", "") or "wordpress" in script.get("src", "").lower()):
+                        src = script.get("src", "")
+                        if src and ("wp-includes" in src and "wp-emoji" in src):
                             script.decompose()
                     
-                    # Find all links
+                    # Remove WordPress admin bar
+                    admin_bar = soup.find(id="wpadminbar")
+                    if admin_bar:
+                        admin_bar.decompose()
+                    
+                    # Find all internal links to crawl
                     for link in soup.find_all("a", href=True):
                         href = link["href"]
                         full_url = urljoin(url, href)
                         parsed = urlparse(full_url)
                         
-                        if parsed.netloc == urlparse(base_url).netloc:
+                        if parsed.netloc == base_domain:
                             clean_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
                             if clean_url not in visited and clean_url not in to_visit:
                                 to_visit.append(clean_url)
                     
-                    # Download assets
+                    # Download and save assets (CSS, JS, images)
                     for tag in soup.find_all(["link", "script", "img"]):
                         src = tag.get("href") or tag.get("src")
                         if src:
                             asset_url = urljoin(url, src)
                             parsed_asset = urlparse(asset_url)
-                            if parsed_asset.netloc == urlparse(base_url).netloc:
+                            if parsed_asset.netloc == base_domain and asset_url not in downloaded_assets:
+                                downloaded_assets.add(asset_url)
                                 try:
-                                    asset_response = requests.get(asset_url, timeout=30)
+                                    asset_response = requests.get(asset_url, timeout=30, headers={
+                                        "User-Agent": "Staticify-Crawler/1.0"
+                                    })
                                     if asset_response.status_code == 200:
                                         asset_path = parsed_asset.path.lstrip("/")
                                         if not asset_path:
-                                            asset_path = "index.html"
+                                            continue
                                         asset_file = crawl_dir / asset_path
                                         asset_file.parent.mkdir(parents=True, exist_ok=True)
                                         
-                                        mode = "w" if "text" in asset_response.headers.get("Content-Type", "") else "wb"
-                                        content = asset_response.text if mode == "w" else asset_response.content
-                                        
-                                        with open(asset_file, mode) as f:
-                                            f.write(content)
+                                        asset_ct = asset_response.headers.get("Content-Type", "")
+                                        if "text/css" in asset_ct:
+                                            # Rewrite CSS url() references
+                                            css_content = rewrite_css_urls(asset_response.text, asset_url, base_url)
+                                            with open(asset_file, "w", encoding="utf-8") as f:
+                                                f.write(css_content)
+                                        elif "text" in asset_ct or "javascript" in asset_ct or "json" in asset_ct:
+                                            with open(asset_file, "w", encoding="utf-8") as f:
+                                                f.write(asset_response.text)
+                                        else:
+                                            with open(asset_file, "wb") as f:
+                                                f.write(asset_response.content)
                                         files_saved.append(asset_path)
                                 except Exception as e:
                                     crawl_jobs[job_id]["errors"].append(f"Failed to download {asset_url}: {str(e)}")
                     
-                    # Save HTML
+                    # Also grab srcset images
+                    for img in soup.find_all("img", srcset=True):
+                        for part in img["srcset"].split(","):
+                            part = part.strip().split()[0]
+                            img_url = urljoin(url, part)
+                            parsed_img = urlparse(img_url)
+                            if parsed_img.netloc == base_domain and img_url not in downloaded_assets:
+                                downloaded_assets.add(img_url)
+                                try:
+                                    img_response = requests.get(img_url, timeout=30, headers={
+                                        "User-Agent": "Staticify-Crawler/1.0"
+                                    })
+                                    if img_response.status_code == 200:
+                                        img_path = parsed_img.path.lstrip("/")
+                                        if img_path:
+                                            img_file = crawl_dir / img_path
+                                            img_file.parent.mkdir(parents=True, exist_ok=True)
+                                            with open(img_file, "wb") as f:
+                                                f.write(img_response.content)
+                                            files_saved.append(img_path)
+                                except Exception:
+                                    pass
+                    
+                    # Rewrite links in HTML content
+                    rewritten_html = rewrite_links(response.text, base_url, url)
+                    
+                    # Determine save path
                     parsed_url = urlparse(url)
                     page_path = parsed_url.path.lstrip("/")
                     if not page_path or page_path.endswith("/"):
@@ -502,7 +702,7 @@ async def crawl_website(job_id: str, source: dict):
                     html_file.parent.mkdir(parents=True, exist_ok=True)
                     
                     with open(html_file, "w", encoding="utf-8") as f:
-                        f.write(str(soup))
+                        f.write(rewritten_html)
                     files_saved.append(page_path)
                     
             except Exception as e:
@@ -772,21 +972,161 @@ async def get_deployment_logs(deployment_id: str):
 
 # ============ HISTORY ============
 
+def normalize_history_item(item: dict) -> dict:
+    """Normalize legacy history items to new schema"""
+    # Handle legacy fields from previous schema (profile_id/profile_name)
+    if "deployment_config_id" not in item and "profile_id" in item:
+        item["deployment_config_id"] = item.get("profile_id", "unknown")
+    if "deployment_name" not in item and "profile_name" in item:
+        item["deployment_name"] = item.get("profile_name", "Legacy Deployment")
+    if "source_name" not in item:
+        item["source_name"] = "Legacy Source"
+    if "destination_name" not in item:
+        item["destination_name"] = "Legacy Destination"
+    # Ensure required fields have defaults
+    item.setdefault("deployment_config_id", "unknown")
+    item.setdefault("deployment_name", "Unknown")
+    item.setdefault("source_name", "Unknown")
+    item.setdefault("destination_name", "Unknown")
+    item.setdefault("pages_crawled", 0)
+    return item
+
 @api_router.get("/history", response_model=List[DeploymentHistory])
 async def get_deployment_history(limit: int = 50):
     history = await db.deployment_history.find({}, {"_id": 0}).sort("started_at", -1).to_list(limit)
+    # Normalize legacy data
+    history = [normalize_history_item(item) for item in history]
     return history
 
 @api_router.get("/history/config/{config_id}", response_model=List[DeploymentHistory])
 async def get_config_history(config_id: str, limit: int = 20):
     history = await db.deployment_history.find({"deployment_config_id": config_id}, {"_id": 0}).sort("started_at", -1).to_list(limit)
+    history = [normalize_history_item(item) for item in history]
     return history
 
 # ============ SCHEDULES ============
 
+# Scheduler instance
+scheduler = AsyncIOScheduler()
+
+async def run_scheduled_deployment(schedule_id: str, config_id: str):
+    """Execute a scheduled deployment: crawl then deploy."""
+    try:
+        config = await db.deployment_configs.find_one({"id": config_id}, {"_id": 0})
+        if not config:
+            logger.error(f"Schedule {schedule_id}: config {config_id} not found")
+            return
+        
+        source = await db.sources.find_one({"id": config["source_id"]}, {"_id": 0})
+        destination = await db.destinations.find_one({"id": config["destination_id"]}, {"_id": 0})
+        
+        if not source or not destination:
+            logger.error(f"Schedule {schedule_id}: source or destination not found")
+            return
+        
+        # Start crawl
+        job_id = str(uuid.uuid4())
+        crawl_jobs[job_id] = {
+            "status": "pending",
+            "pages_crawled": 0,
+            "total_pages": 0,
+            "current_url": None,
+            "files": [],
+            "errors": [],
+            "source_id": source["id"]
+        }
+        
+        logger.info(f"Schedule {schedule_id}: starting crawl for {source['name']}")
+        await crawl_website(job_id, source)
+        
+        if crawl_jobs[job_id]["status"] != "completed":
+            logger.error(f"Schedule {schedule_id}: crawl failed")
+            # Record history
+            history = DeploymentHistory(
+                deployment_config_id=config_id,
+                deployment_name=config["name"],
+                source_name=source["name"],
+                destination_name=destination["name"],
+                status="failed",
+                error_message="Scheduled crawl failed",
+                logs=crawl_jobs[job_id].get("errors", [])
+            )
+            history_dict = history.model_dump()
+            history_dict["completed_at"] = datetime.now(timezone.utc).isoformat()
+            await db.deployment_history.insert_one(history_dict)
+            return
+        
+        # Start deployment
+        history = DeploymentHistory(
+            deployment_config_id=config_id,
+            deployment_name=config["name"],
+            source_name=source["name"],
+            destination_name=destination["name"],
+            status="deploying",
+            pages_crawled=crawl_jobs[job_id]["pages_crawled"]
+        )
+        await db.deployment_history.insert_one(history.model_dump())
+        
+        logger.info(f"Schedule {schedule_id}: starting deploy to {destination['name']}")
+        if destination.get("protocol") == "sftp":
+            await deploy_via_sftp(history.id, destination, job_id)
+        else:
+            await deploy_via_ftp(history.id, destination, job_id)
+        
+        # Update schedule last_run
+        await db.scheduled_deployments.update_one(
+            {"id": schedule_id},
+            {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}
+        )
+        
+        await db.deployment_configs.update_one(
+            {"id": config_id},
+            {"$set": {"last_run": datetime.now(timezone.utc).isoformat()}}
+        )
+        
+        logger.info(f"Schedule {schedule_id}: completed")
+        
+    except Exception as e:
+        logger.error(f"Schedule {schedule_id} failed: {e}")
+
+
+def add_schedule_job(schedule_id: str, config_id: str, interval_hours: int):
+    """Add a job to the APScheduler."""
+    job_id = f"schedule_{schedule_id}"
+    # Remove existing job if present
+    try:
+        scheduler.remove_job(job_id)
+    except Exception:
+        pass
+    
+    scheduler.add_job(
+        run_scheduled_deployment,
+        trigger=IntervalTrigger(hours=interval_hours),
+        id=job_id,
+        args=[schedule_id, config_id],
+        replace_existing=True
+    )
+
+
+def remove_schedule_job(schedule_id: str):
+    """Remove a job from the APScheduler."""
+    try:
+        scheduler.remove_job(f"schedule_{schedule_id}")
+    except Exception:
+        pass
+
+
 @api_router.get("/schedules", response_model=List[ScheduledDeployment])
 async def get_schedules():
     schedules = await db.scheduled_deployments.find({}, {"_id": 0}).to_list(100)
+    # Enrich with next run info from scheduler
+    for s in schedules:
+        try:
+            job = scheduler.get_job(f"schedule_{s['id']}")
+            if job and job.next_run_time:
+                s["next_run"] = job.next_run_time.isoformat()
+        except Exception:
+            pass
     return schedules
 
 @api_router.post("/schedules", response_model=ScheduledDeployment)
@@ -798,18 +1138,30 @@ async def create_schedule(schedule_data: ScheduledDeploymentCreate):
     schedule = ScheduledDeployment(
         deployment_config_id=schedule_data.deployment_config_id,
         deployment_name=config["name"],
-        cron_expression=schedule_data.cron_expression,
+        interval_hours=schedule_data.interval_hours,
         enabled=schedule_data.enabled
     )
     
     await db.scheduled_deployments.insert_one(schedule.model_dump())
+    
+    if schedule.enabled:
+        add_schedule_job(schedule.id, schedule.deployment_config_id, schedule.interval_hours)
+    
     return schedule
 
 @api_router.put("/schedules/{schedule_id}")
 async def update_schedule(schedule_id: str, enabled: bool):
-    result = await db.scheduled_deployments.update_one({"id": schedule_id}, {"$set": {"enabled": enabled}})
-    if result.modified_count == 0:
+    schedule = await db.scheduled_deployments.find_one({"id": schedule_id}, {"_id": 0})
+    if not schedule:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    
+    await db.scheduled_deployments.update_one({"id": schedule_id}, {"$set": {"enabled": enabled}})
+    
+    if enabled:
+        add_schedule_job(schedule_id, schedule["deployment_config_id"], schedule.get("interval_hours", 24))
+    else:
+        remove_schedule_job(schedule_id)
+    
     return {"message": "Schedule updated"}
 
 @api_router.delete("/schedules/{schedule_id}")
@@ -817,6 +1169,7 @@ async def delete_schedule(schedule_id: str):
     result = await db.scheduled_deployments.delete_one({"id": schedule_id})
     if result.deleted_count == 0:
         raise HTTPException(status_code=404, detail="Schedule not found")
+    remove_schedule_job(schedule_id)
     return {"message": "Schedule deleted"}
 
 # ============ COMPARISON ============
@@ -833,11 +1186,16 @@ async def compare_content(request: CompareRequest):
     source = await db.sources.find_one({"id": config["source_id"]}, {"_id": 0})
     destination = await db.destinations.find_one({"id": config["destination_id"]}, {"_id": 0})
     
+    if not source:
+        raise HTTPException(status_code=400, detail="Source not found")
+    if not destination:
+        raise HTTPException(status_code=400, detail="Destination not found")
+    
     source_url = f"{source['url'].rstrip('/')}{request.page_path}"
     dest_url = f"{destination['public_url'].rstrip('/')}{request.page_path}" if destination.get('public_url') else None
     
     try:
-        source_response = requests.get(source_url, timeout=30)
+        source_response = requests.get(source_url, timeout=30, headers={"User-Agent": "Staticify-Crawler/1.0"})
         source_content = source_response.text if source_response.status_code == 200 else ""
     except Exception:
         source_content = ""
@@ -845,7 +1203,7 @@ async def compare_content(request: CompareRequest):
     dest_content = ""
     if dest_url:
         try:
-            dest_response = requests.get(dest_url, timeout=30)
+            dest_response = requests.get(dest_url, timeout=30, headers={"User-Agent": "Staticify-Crawler/1.0"})
             dest_content = dest_response.text if dest_response.status_code == 200 else ""
         except Exception:
             pass
@@ -864,9 +1222,9 @@ async def compare_content(request: CompareRequest):
             differences.append({"type": "removed", "content": line[1:]})
     
     return CompareResult(
-        source_content=source_content,
-        destination_content=dest_content,
-        differences=differences,
+        source_content=source_content[:50000],
+        destination_content=dest_content[:50000],
+        differences=differences[:500],
         has_differences=len(differences) > 0
     )
 
@@ -876,24 +1234,113 @@ async def compare_files(request: CompareRequest):
     if not config:
         raise HTTPException(status_code=404, detail="Deployment config not found")
     
+    destination = await db.destinations.find_one({"id": config["destination_id"]}, {"_id": 0})
+    
+    # Get source files from the latest crawl
     source_files = []
     for job_id, job in crawl_jobs.items():
         if job.get("status") == "completed" and job.get("source_id") == config["source_id"]:
             source_files = job.get("files", [])
             break
     
+    # Get destination files via FTP/SFTP if possible
     dest_files = []
+    if destination:
+        try:
+            dest_files = await list_destination_files(destination)
+        except Exception as e:
+            logger.error(f"Failed to list destination files: {e}")
     
     source_set = set(source_files)
     dest_set = set(dest_files)
     
+    # Files in source but not destination
+    added = list(source_set - dest_set)
+    # Files in destination but not source
+    removed = list(dest_set - source_set)
+    # Files in both (potentially modified)
+    common = list(source_set & dest_set)
+    
     return FileCompareResult(
         source_files=source_files,
         destination_files=dest_files,
-        added=list(source_set - dest_set),
-        removed=list(dest_set - source_set),
-        modified=[]
+        added=added,
+        removed=removed,
+        modified=common
     )
+
+
+async def list_destination_files(destination: dict) -> List[str]:
+    """List files on the destination server via FTP/SFTP."""
+    password = decrypt_password(destination.get("encrypted_password", ""))
+    if not password and destination.get("password"):
+        password = destination["password"]
+    
+    files = []
+    
+    if destination.get("protocol") == "sftp":
+        import paramiko
+        try:
+            transport = paramiko.Transport((destination["host"], destination["port"]))
+            transport.connect(username=destination["username"], password=password)
+            sftp = paramiko.SFTPClient.from_transport(transport)
+            
+            root = destination["root_path"]
+            dirs_to_scan = [root]
+            while dirs_to_scan:
+                current = dirs_to_scan.pop(0)
+                try:
+                    for entry in sftp.listdir_attr(current):
+                        full_path = f"{current}/{entry.filename}"
+                        if entry.st_mode and (entry.st_mode & 0o40000):  # is directory
+                            dirs_to_scan.append(full_path)
+                        else:
+                            rel = full_path[len(root):].lstrip("/")
+                            if rel:
+                                files.append(rel)
+                except Exception:
+                    pass
+            
+            sftp.close()
+            transport.close()
+        except Exception as e:
+            logger.error(f"SFTP listing failed: {e}")
+    else:
+        import ftplib
+        try:
+            ftp = ftplib.FTP()
+            ftp.connect(destination["host"], destination["port"], timeout=30)
+            ftp.login(destination["username"], password)
+            
+            root = destination["root_path"]
+            dirs_to_scan = [root]
+            while dirs_to_scan:
+                current = dirs_to_scan.pop(0)
+                try:
+                    ftp.cwd(current)
+                    entries = []
+                    ftp.retrlines('LIST', entries.append)
+                    for entry in entries:
+                        parts = entry.split(None, 8)
+                        if len(parts) >= 9:
+                            name = parts[8]
+                            if name in (".", ".."):
+                                continue
+                            full_path = f"{current}/{name}"
+                            if entry.startswith("d"):
+                                dirs_to_scan.append(full_path)
+                            else:
+                                rel = full_path[len(root):].lstrip("/")
+                                if rel:
+                                    files.append(rel)
+                except Exception:
+                    pass
+            
+            ftp.quit()
+        except Exception as e:
+            logger.error(f"FTP listing failed: {e}")
+    
+    return files
 
 # ============ STATS ============
 
@@ -937,6 +1384,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def startup_event():
+    """Start the scheduler and reload saved schedules."""
+    scheduler.start()
+    logger.info("APScheduler started")
+    # Reload enabled schedules from database
+    try:
+        schedules = await db.scheduled_deployments.find({"enabled": True}, {"_id": 0}).to_list(100)
+        for s in schedules:
+            add_schedule_job(s["id"], s["deployment_config_id"], s.get("interval_hours", 24))
+        logger.info(f"Loaded {len(schedules)} active schedules")
+    except Exception as e:
+        logger.error(f"Failed to load schedules: {e}")
+
 @app.on_event("shutdown")
 async def shutdown_db_client():
+    scheduler.shutdown(wait=False)
     client.close()

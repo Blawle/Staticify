@@ -6,12 +6,11 @@ import {
   Plus,
   Trash2,
   RefreshCw,
-  Calendar,
+  Timer,
   Link2
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import {
@@ -52,13 +51,15 @@ import { Link } from "react-router-dom";
 const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
 const API = `${BACKEND_URL}/api`;
 
-const cronPresets = [
-  { label: "Every hour", value: "0 * * * *" },
-  { label: "Every 6 hours", value: "0 */6 * * *" },
-  { label: "Daily at midnight", value: "0 0 * * *" },
-  { label: "Daily at 6 AM", value: "0 6 * * *" },
-  { label: "Weekly (Sunday midnight)", value: "0 0 * * 0" },
-  { label: "Monthly (1st at midnight)", value: "0 0 1 * *" },
+const intervalPresets = [
+  { label: "Every hour", value: "1" },
+  { label: "Every 2 hours", value: "2" },
+  { label: "Every 6 hours", value: "6" },
+  { label: "Every 12 hours", value: "12" },
+  { label: "Every 24 hours (daily)", value: "24" },
+  { label: "Every 48 hours", value: "48" },
+  { label: "Every 72 hours (3 days)", value: "72" },
+  { label: "Every 168 hours (weekly)", value: "168" },
 ];
 
 export default function Schedules() {
@@ -69,7 +70,7 @@ export default function Schedules() {
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [selectedSchedule, setSelectedSchedule] = useState(null);
   const [selectedConfigId, setSelectedConfigId] = useState("");
-  const [cronExpression, setCronExpression] = useState("0 0 * * *");
+  const [intervalHours, setIntervalHours] = useState("24");
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -93,7 +94,7 @@ export default function Schedules() {
   };
 
   const handleCreate = async () => {
-    if (!selectedConfigId || !cronExpression) {
+    if (!selectedConfigId || !intervalHours) {
       toast.error("Please fill in all fields");
       return;
     }
@@ -102,13 +103,13 @@ export default function Schedules() {
       setSaving(true);
       await axios.post(`${API}/schedules`, {
         deployment_config_id: selectedConfigId,
-        cron_expression: cronExpression,
+        interval_hours: parseInt(intervalHours, 10),
         enabled: true
       });
       toast.success("Schedule created");
       setIsDialogOpen(false);
       setSelectedConfigId("");
-      setCronExpression("0 0 * * *");
+      setIntervalHours("24");
       fetchData();
     } catch (error) {
       toast.error("Failed to create schedule");
@@ -140,6 +141,15 @@ export default function Schedules() {
     }
   };
 
+  const formatInterval = (hours) => {
+    if (!hours) return "Unknown";
+    if (hours < 24) return `Every ${hours} hour${hours > 1 ? 's' : ''}`;
+    const days = hours / 24;
+    if (days === 1) return "Daily";
+    if (days === 7) return "Weekly";
+    return `Every ${days} days`;
+  };
+
   const canCreateSchedule = deployments.length > 0;
 
   return (
@@ -147,7 +157,7 @@ export default function Schedules() {
       <div className="page-header flex items-center justify-between">
         <div>
           <h1 className="page-title" data-testid="schedules-title">Scheduled Deployments</h1>
-          <p className="page-description">Automate your deployments with cron schedules</p>
+          <p className="page-description">Automate your deployments with interval-based schedules</p>
         </div>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={fetchData} data-testid="refresh-schedules-btn">
@@ -180,7 +190,7 @@ export default function Schedules() {
             <div className="empty-state">
               <Clock className="w-16 h-16 text-muted-foreground mb-4" />
               <p className="empty-state-title">No scheduled deployments</p>
-              <p className="empty-state-description">Set up automated deployments with cron schedules.</p>
+              <p className="empty-state-description">Set up automated deployments with interval-based schedules.</p>
               {canCreateSchedule && (
                 <Button className="btn-primary-glow" onClick={() => setIsDialogOpen(true)} data-testid="create-first-schedule-btn">
                   <Clock className="w-4 h-4 mr-2" />Create First Schedule
@@ -192,7 +202,9 @@ export default function Schedules() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Deployment</TableHead>
-                  <TableHead>Schedule</TableHead>
+                  <TableHead>Interval</TableHead>
+                  <TableHead>Last Run</TableHead>
+                  <TableHead>Next Run</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
@@ -207,7 +219,20 @@ export default function Schedules() {
                       </div>
                     </TableCell>
                     <TableCell>
-                      <code className="font-mono text-xs bg-secondary px-2 py-1 rounded">{schedule.cron_expression}</code>
+                      <div className="flex items-center gap-2">
+                        <Timer className="w-3.5 h-3.5 text-primary" />
+                        <span className="text-sm">{formatInterval(schedule.interval_hours)}</span>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">
+                        {schedule.last_run ? new Date(schedule.last_run).toLocaleString() : "Never"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-xs text-muted-foreground">
+                        {schedule.next_run ? new Date(schedule.next_run).toLocaleString() : "—"}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <div className="flex items-center gap-2">
@@ -230,19 +255,19 @@ export default function Schedules() {
         </CardContent>
       </Card>
 
-      {/* Cron Reference */}
+      {/* Interval Reference */}
       <Card className="bg-card border-border mt-6">
         <CardHeader>
           <CardTitle className="font-heading text-base flex items-center gap-2">
-            <Calendar className="w-4 h-4 text-primary" />Cron Reference
+            <Timer className="w-4 h-4 text-primary" />Interval Reference
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {cronPresets.map((preset, index) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            {intervalPresets.map((preset, index) => (
               <div key={index} className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg">
                 <span className="text-sm">{preset.label}</span>
-                <code className="font-mono text-xs bg-background px-2 py-1 rounded">{preset.value}</code>
+                <code className="font-mono text-xs bg-background px-2 py-1 rounded">{preset.value}h</code>
               </div>
             ))}
           </div>
@@ -254,7 +279,7 @@ export default function Schedules() {
         <DialogContent className="sm:max-w-[425px] bg-card border-border">
           <DialogHeader>
             <DialogTitle className="font-heading">Create Schedule</DialogTitle>
-            <DialogDescription>Schedule automated deployments.</DialogDescription>
+            <DialogDescription>Schedule automated deployments at regular intervals.</DialogDescription>
           </DialogHeader>
           <div className="grid gap-4 py-4">
             <div className="form-group">
@@ -271,21 +296,17 @@ export default function Schedules() {
               </Select>
             </div>
             <div className="form-group">
-              <Label className="form-label">Schedule Preset</Label>
-              <Select value={cronExpression} onValueChange={setCronExpression}>
-                <SelectTrigger data-testid="schedule-preset-select">
-                  <SelectValue placeholder="Select a schedule" />
+              <Label className="form-label">Run Interval</Label>
+              <Select value={intervalHours} onValueChange={setIntervalHours}>
+                <SelectTrigger data-testid="schedule-interval-select">
+                  <SelectValue placeholder="Select an interval" />
                 </SelectTrigger>
                 <SelectContent>
-                  {cronPresets.map((preset, index) => (
+                  {intervalPresets.map((preset, index) => (
                     <SelectItem key={index} value={preset.value}>{preset.label}</SelectItem>
                   ))}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="form-group">
-              <Label className="form-label">Custom Cron</Label>
-              <Input value={cronExpression} onChange={(e) => setCronExpression(e.target.value)} placeholder="0 0 * * *" className="font-mono" data-testid="cron-input" />
             </div>
           </div>
           <DialogFooter>
@@ -302,7 +323,7 @@ export default function Schedules() {
         <AlertDialogContent className="bg-card border-border">
           <AlertDialogHeader>
             <AlertDialogTitle>Delete Schedule</AlertDialogTitle>
-            <AlertDialogDescription>Are you sure? This cannot be undone.</AlertDialogDescription>
+            <AlertDialogDescription>Are you sure? This will stop the scheduled deployments.</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel data-testid="cancel-delete-schedule-btn">Cancel</AlertDialogCancel>

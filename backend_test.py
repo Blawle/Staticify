@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 class WPStaticDeployerAPITester:
-    def __init__(self, base_url="https://wp-to-static-6.preview.emergentagent.com"):
+    def __init__(self, base_url="https://ftp-static-sync.preview.emergentagent.com"):
         self.base_url = base_url
         self.api_base = f"{base_url}/api"
         self.tests_run = 0
