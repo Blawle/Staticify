@@ -1355,6 +1355,7 @@ async def get_stats():
     scheduled_count = await db.scheduled_deployments.count_documents({"enabled": True})
     
     recent = await db.deployment_history.find({}, {"_id": 0}).sort("started_at", -1).to_list(5)
+    recent = [normalize_history_item(item) for item in recent]
     
     return {
         "total_sources": total_sources,

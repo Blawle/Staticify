@@ -1,93 +1,56 @@
-# WordPress to Static Deployer - Product Requirements Document
+# Staticify - WordPress to Static Site Deployer
 
-## Original Problem Statement
-Build a self hostable tool that can be utilized to take an internal WordPress built website and deploy it to an external web server as a static website via FTP to remove the vulnerabilities that exist within WordPress instances. There should be the ability to compare both sites within the tool to determine differences. There should be an internal instance configuration as well as external host configuration. The configurations should include configuration of where the root directory is for the external, as well as internal, deployments of the website.
+## Product Overview
+A self-hostable tool that converts internal WordPress websites to static HTML and deploys them to external web servers via FTP/SFTP, removing WordPress vulnerabilities.
 
-## User Choices
-- Both FTP and SFTP protocol support
-- Both visual diff (side-by-side preview) and file-based diff (list of changed/added/deleted files)
-- Web crawler to convert WordPress pages to static HTML
-- No authentication needed (local tool only)
-- Multiple site profiles, scheduled deployments, and deployment history
-
-## User Personas
-1. **Web Developers**: Need to convert client WordPress sites to static for security
-2. **System Administrators**: Manage multiple site deployments via FTP/SFTP
-3. **WordPress Site Owners**: Want to reduce security vulnerabilities
-
-## Core Requirements (Static)
-- [x] Site profile management (CRUD operations)
-- [x] WordPress crawler to generate static HTML
-- [x] FTP deployment support
-- [x] SFTP deployment support
-- [x] Visual diff comparison (side-by-side)
-- [x] File-based diff comparison
-- [x] Scheduled deployments with cron expressions
-- [x] Deployment history with logs
-- [x] Internal/External root directory configuration
+## Core Requirements
+- **Source Management**: Manage WordPress sites to crawl (no credentials needed - public pages only)
+- **Destination Management**: Configure FTP/SFTP servers with AES-256 encrypted credentials
+- **Deployment Configurations**: Link a Source to a Destination
+- **Static Site Generation**: Crawl WordPress sites, rewrite links to relative paths, download all assets
+- **Link Rewriting**: All internal links in generated static HTML are converted from absolute WordPress URLs to relative paths so they work on the deployed static site
+- **Deployment via FTP/SFTP**: Upload crawled static files to destination servers
+- **Scheduled Deployments**: Interval-based automated deployments using APScheduler
+- **Deployment History**: Full logging of all deployment runs with status, file counts, and logs
+- **Site Comparison**: Compare content and assets between source WordPress site and deployed static site
+- **Proxmox LXC Deployment**: Scripts and guides for self-hosted deployment
 
 ## Architecture
-### Backend (FastAPI + MongoDB)
-- **Models**: SiteProfile, DeploymentHistory, ScheduledDeployment
-- **Services**: WordPress Crawler (BeautifulSoup), FTP Client (ftplib), SFTP Client (paramiko)
-- **Endpoints**: /api/profiles, /api/crawler, /api/deploy, /api/compare, /api/schedules, /api/history
+- **Frontend**: React + Tailwind CSS + Shadcn/UI
+- **Backend**: FastAPI (Python)
+- **Database**: MongoDB
+- **Scheduler**: APScheduler (AsyncIOScheduler with IntervalTrigger)
+- **Security**: AES-256 encryption for FTP/SFTP passwords via `cryptography` library
 
-### Frontend (React + Shadcn UI)
-- **Pages**: Dashboard, SiteProfiles, Deploy, Compare, Schedules, History
-- **Theme**: Dark mode with Tactical Minimalism design
-- **Components**: Terminal-style logs, Bento grid layout, Resizable diff panels
+## Data Model
+- **sources**: `{ id, name, url, root_path, description, created_at, updated_at, last_crawl }`
+- **destinations**: `{ id, name, host, port, protocol, username, encrypted_password, root_path, public_url, description }`
+- **deployment_configs**: `{ id, name, source_id, destination_id, description, auto_crawl }`
+- **deployment_history**: `{ id, deployment_config_id, deployment_name, source_name, destination_name, status, pages_crawled, files_deployed, files_failed, logs, error_message, started_at, completed_at }`
+- **scheduled_deployments**: `{ id, deployment_config_id, deployment_name, interval_hours, enabled, last_run, next_run }`
 
-## What's Been Implemented (January 2026)
-- [x] Complete backend API with all CRUD operations
-- [x] WordPress crawler with recursive page/asset fetching
-- [x] FTP deployment with directory creation
-- [x] SFTP deployment with paramiko
-- [x] Visual diff with side-by-side content comparison
-- [x] File-based diff showing added/removed/modified files
-- [x] Scheduled deployments with cron expression support
-- [x] Deployment history with expandable logs
-- [x] Dashboard with stats overview
-- [x] Site profiles management with create/edit/delete
-- [x] Real-time deployment logs in terminal style
-- [x] Dark theme UI with professional design
+## What's Implemented (as of March 7, 2026)
+- [x] Sources CRUD (WordPress sites)
+- [x] Destinations CRUD (FTP/SFTP with encrypted passwords)
+- [x] Deployment Configs CRUD (linking source → destination)
+- [x] WordPress Crawler with link rewriting (absolute → relative URLs)
+- [x] Asset downloading (CSS, JS, images, srcset images)
+- [x] CSS url() rewriting
+- [x] FTP deployment
+- [x] SFTP deployment
+- [x] Deployment History with full logging
+- [x] Interval-based Scheduled Deployments (APScheduler)
+- [x] Content Comparison (visual diff between source and destination)
+- [x] File Comparison (list files via FTP/SFTP and compare with crawled files)
+- [x] Dashboard with stats and recent activity
+- [x] Proxmox LXC deployment scripts
+- [x] Legacy data migration handling (normalize_history_item)
+- [x] Full test suite (30 backend tests, all passing)
 
-## Prioritized Backlog
-### P0 (Critical)
-- All core features implemented ✅
-
-### P1 (High Priority)
-- [ ] Actual scheduled job execution (APScheduler integration)
-- [ ] SSH key authentication for SFTP
-- [ ] Webhook notifications on deployment completion
-
-### P2 (Medium Priority)
-- [ ] Incremental deployment (only changed files)
-- [ ] Rollback functionality
-- [ ] Multi-user support with authentication
-
-### P3 (Nice to Have)
-- [ ] WordPress plugin integration
-- [ ] Cloud storage deployment (S3, GCS)
-- [ ] Deployment preview before push
-
-## Next Tasks
-1. Implement APScheduler for actual scheduled job execution
-2. Add SSH key authentication option for SFTP
-3. Add deployment webhook/email notifications
-4. Implement incremental deployment (hash-based file comparison)
-
-## Security Update (January 2026)
-
-### Password Encryption Implementation
-- **Encryption**: AES-256 via Fernet (cryptography library)
-- **Key Derivation**: PBKDF2-HMAC-SHA256 with 100,000 iterations
-- **Storage**: Passwords stored in `encrypted_password` field, plain `external_password` field is always empty
-- **Display**: Frontend shows masked "••••••••" and "Password encrypted" status
-- **Decryption**: Only occurs server-side during FTP/SFTP connection
-
-### Security Features
-- [x] Passwords never returned in plain text to frontend
-- [x] Encrypted at rest in MongoDB
-- [x] Visual indicator showing encryption status on profile cards
-- [x] Form shows "Stored encrypted using AES-256" notice
-- [x] Legacy support for unencrypted passwords (auto-migration on deploy)
+## Backlog
+- [ ] P1: Visual iframe-based comparison (render both sites side-by-side)
+- [ ] P2: Selective page crawling (include/exclude patterns)
+- [ ] P3: Email/webhook notifications on deployment completion
+- [ ] P3: Deployment rollback capability
+- [ ] P4: Multi-user support with authentication
+- [ ] P4: Refactor server.py into modular structure (routers, models, services)
