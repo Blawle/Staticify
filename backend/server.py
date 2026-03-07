@@ -1,4 +1,5 @@
 from fastapi import FastAPI, APIRouter, HTTPException, BackgroundTasks
+from fastapi.responses import FileResponse, HTMLResponse
 from dotenv import load_dotenv
 from starlette.middleware.cors import CORSMiddleware
 from motor.motor_asyncio import AsyncIOMotorClient
@@ -969,6 +970,63 @@ async def get_deployment_logs(deployment_id: str):
     if not deployment:
         raise HTTPException(status_code=404, detail="Deployment not found")
     return deployment
+
+# ============ PREVIEW ============
+
+import mimetypes
+
+@api_router.get("/preview/{job_id}/files")
+async def list_preview_files(job_id: str):
+    """List all files available for preview from a completed crawl."""
+    if job_id not in crawl_jobs:
+        raise HTTPException(status_code=404, detail="Crawl job not found")
+    if crawl_jobs[job_id]["status"] != "completed":
+        raise HTTPException(status_code=400, detail="Crawl not yet completed")
+    
+    crawl_dir = Path(f"/tmp/crawl_{job_id}")
+    if not crawl_dir.exists():
+        raise HTTPException(status_code=404, detail="Crawl files not found")
+    
+    files = []
+    for f in sorted(crawl_dir.rglob("*")):
+        if f.is_file():
+            rel = str(f.relative_to(crawl_dir))
+            size = f.stat().st_size
+            files.append({"path": rel, "size": size})
+    
+    return {"job_id": job_id, "files": files, "total": len(files)}
+
+
+@api_router.get("/preview/{job_id}/{file_path:path}")
+async def serve_preview_file(job_id: str, file_path: str):
+    """Serve a single file from a completed crawl for preview."""
+    if job_id not in crawl_jobs:
+        raise HTTPException(status_code=404, detail="Crawl job not found")
+    
+    crawl_dir = Path(f"/tmp/crawl_{job_id}")
+    
+    # Default to index.html
+    if not file_path or file_path == "/":
+        file_path = "index.html"
+    
+    target = (crawl_dir / file_path).resolve()
+    
+    # Security: ensure path stays within crawl dir
+    if not str(target).startswith(str(crawl_dir.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # If path is a directory, look for index.html inside it
+    if target.is_dir():
+        target = target / "index.html"
+    
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    
+    content_type, _ = mimetypes.guess_type(str(target))
+    if not content_type:
+        content_type = "application/octet-stream"
+    
+    return FileResponse(str(target), media_type=content_type)
 
 # ============ HISTORY ============
 

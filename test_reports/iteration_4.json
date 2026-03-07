@@ -1,0 +1,71 @@
+{
+  "summary": "Tested new 'Preview Before Deploy' feature. All 17 backend tests pass including preview API endpoints (file listing, file serving, path traversal protection). Frontend preview modal works correctly with file browser sidebar and iframe preview. All existing CRUD and navigation still work (regression passed).",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {
+        "screen": "Preview iframe",
+        "issue": "Console shows 'Blocked script execution' because iframe sandbox doesn't include 'allow-scripts'. This is intentional security (sandboxed preview), but scripts won't execute in preview.",
+        "impact": "LOW - by design for security"
+      }
+    ]
+  },
+  "test_report_links": [
+    "/app/backend/tests/test_preview_feature.py",
+    "/app/test_reports/pytest/pytest_preview_results.xml"
+  ],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "Path traversal protection at backend level works correctly - encoded paths like ..%2F are blocked with 403 'Access denied'. Unencoded paths like ../../../ are rewritten by browser/ingress before reaching backend."
+  ],
+  "updated_files": [
+    "/app/backend/tests/test_preview_feature.py"
+  ],
+  "success_rate": {
+    "backend": "100% (17/17 preview feature tests passed)",
+    "frontend": "100% (Deploy page 3-step layout, preview modal with iframe and file sidebar, all navigation pages work)"
+  },
+  "seed_data_creation": "Test sources created and cleaned up during testing",
+  "retest_needed": false,
+  "should_main_agent_self_test": true,
+  "context_for_next_testing_agent": "Preview feature is fully working. After crawling a WordPress source, users can: 1) Click 'Open Preview' to see a modal with file browser sidebar and iframe preview, 2) Click files in sidebar to navigate, 3) Click 'Open in Tab' to view in new browser tab. The preview API serves files from /tmp/crawl_{job_id}/ directory. Path traversal protection works via .resolve() and startswith() checks in serve_preview_file endpoint.",
+  "tests_passed": [
+    "Preview API: GET /api/preview/{job_id}/files returns 404 for non-existent job",
+    "Preview API: GET /api/preview/{job_id}/files returns 400 for incomplete crawl",
+    "Preview API: GET /api/preview/{job_id}/files returns file listing after completion",
+    "Preview API: GET /api/preview/{job_id}/index.html serves crawled HTML file",
+    "Preview API: Empty path defaults to index.html",
+    "Preview API: Non-existent file returns 404",
+    "Preview API: Path traversal with encoded paths blocked (403)",
+    "Preview API: Cannot access files outside crawl directory",
+    "Deploy page UI: Shows 3 steps (Crawl, Preview, Deploy) in correct order",
+    "Deploy page UI: Step 2 Preview disabled before crawl",
+    "Deploy page UI: Step 3 Deploy disabled before crawl",
+    "Deploy page UI: Open Preview button enabled after crawl completes",
+    "Preview modal: Opens with file browser sidebar and iframe",
+    "Preview modal: Files listed in sidebar (PAGES and ASSETS sections)",
+    "Preview modal: Open in Tab button works",
+    "Preview modal: Close button works",
+    "Regression: Sources CRUD works",
+    "Regression: Destinations CRUD works",
+    "Regression: Deployment configs list works",
+    "Regression: Schedules list works",
+    "Regression: History list works",
+    "Regression: Stats endpoint works",
+    "All navigation pages load correctly"
+  ],
+  "features_verified": {
+    "preview_api_file_listing": "GET /api/preview/{job_id}/files - Returns {job_id, files: [{path, size}], total}",
+    "preview_api_file_serving": "GET /api/preview/{job_id}/{path} - Serves file with correct content-type",
+    "preview_api_security": "Path traversal protection working - encoded paths blocked with 403",
+    "preview_ui_modal": "Full-screen modal with dark overlay, header with file count badge",
+    "preview_ui_sidebar": "File browser with PAGES (HTML files) and ASSETS sections",
+    "preview_ui_iframe": "Sandboxed iframe loading crawled files",
+    "deploy_page_3_step_layout": "Select Deployment → Step 1 Crawl → Step 2 Preview → Step 3 Deploy"
+  }
+}
