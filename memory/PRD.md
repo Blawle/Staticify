@@ -42,10 +42,11 @@ A self-hostable tool that converts internal WordPress websites to static HTML an
 - [x] Interval-based Scheduled Deployments (APScheduler)
 - [x] Content Comparison (visual diff between source and destination)
 - [x] File Comparison (list files via FTP/SFTP and compare with crawled files)
+- [x] **Preview Before Deploy** — iframe-based preview of crawled static site with file browser sidebar, path traversal protection, and "Open in Tab" support
 - [x] Dashboard with stats and recent activity
 - [x] Proxmox LXC deployment scripts
 - [x] Legacy data migration handling (normalize_history_item)
-- [x] Full test suite (30 backend tests, all passing)
+- [x] Full test suite (47 backend tests across 2 suites, all passing)
 
 ## Backlog
 - [ ] P1: Visual iframe-based comparison (render both sites side-by-side)
