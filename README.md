@@ -1,4 +1,4 @@
-# WordPress to Static Deployer (Staticify)
+# WordPress to Static Deployer (Staticify) - WIP
 
 A self-hostable tool for converting WordPress websites to static HTML and deploying via FTP/SFTP.
 
